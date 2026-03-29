@@ -4,6 +4,7 @@ from typing import AsyncIterator
 from agent_shell.models.agent import AgentType, AgentResponse, StreamEvent
 from agent_shell.adapters.agent_adapter_protocol import AgentAdapter
 from agent_shell.adapters.claude_code_adapter import ClaudeCodeAdapter
+from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
 
 
 class AgentShell():
@@ -12,7 +13,8 @@ class AgentShell():
 
     def _resolve_adapter(self, agent_type: AgentType) -> AgentAdapter:
         adapters = {
-                AgentType.CLAUDE_CODE: ClaudeCodeAdapter
+                AgentType.CLAUDE_CODE: ClaudeCodeAdapter,
+                AgentType.OPENCODE: OpenCodeAdapter,
         }
         
         adapter_cls = adapters.get(agent_type)

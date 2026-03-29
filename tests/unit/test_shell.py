@@ -3,6 +3,7 @@ import pytest
 from agent_shell.shell import AgentShell
 from agent_shell.models.agent import AgentType
 from agent_shell.adapters.claude_code_adapter import ClaudeCodeAdapter
+from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
 
 
 class TestResolveAdapter:
@@ -13,10 +14,17 @@ class TestResolveAdapter:
         # Assert
         assert isinstance(shell._adapter, ClaudeCodeAdapter)
 
+    def test_resolves_opencode(self):
+        # Arrange / Act
+        shell = AgentShell(agent_type=AgentType.OPENCODE)
+
+        # Assert
+        assert isinstance(shell._adapter, OpenCodeAdapter)
+
     def test_raises_for_unsupported_agent(self):
         # Arrange / Act / Assert
         with pytest.raises(ValueError, match="Unsupported agent"):
-            AgentShell(agent_type=AgentType.OPENCODE)
+            AgentShell(agent_type=AgentType.GEMINI_CLI)
 
 
 class TestCwdValidation:
