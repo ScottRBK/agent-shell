@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "A lightweight abstraction for executing CLI coding agents headlessly"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "MIT"
 dependencies = []
 [tool.setuptools.packages.find]
 where = ["src"]

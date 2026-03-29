@@ -21,6 +21,16 @@ response = await shell.execute(
 
 print(response.response)
 print(f"Cost: ${response.cost:.4f}")
+print(f"Session: {response.session_id}")
+
+# Resume the conversation using the session_id
+follow_up = await shell.execute(
+    cwd="/path/to/project",
+    prompt="Now refactor the auth module based on your findings",
+    allowed_tools=["Read", "Edit", "Bash"],
+    model="sonnet",
+    session_id=response.session_id,
+)
 ```
 
 ### Stream
@@ -39,7 +49,10 @@ async for event in shell.stream(
     effort="high",
     include_thinking=True,
 ):
-    print(f"[{event.type}] {event.content}")
+    if event.type == "system":
+        print(f"Session: {event.session_id}")
+    else:
+        print(f"[{event.type}] {event.content}")
 ```
 
 ## Supported CLI Agents:
