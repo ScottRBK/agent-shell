@@ -98,6 +98,52 @@ class TestStreamIntegration:
         assert len(tool_events) >= 1, "Expected at least one tool_use event"
 
 
+class TestAutoApproveIntegration:
+    async def test_stream_includes_skip_permissions_by_default(self):
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+        ndjson = [SYSTEM_EVENT, TEXT_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            async for _ in shell.stream(cwd="/tmp", prompt="test"):
+                pass
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        assert "--dangerously-skip-permissions" in cmd_args
+
+    async def test_stream_omits_skip_permissions_when_disabled(self):
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+        ndjson = [SYSTEM_EVENT, TEXT_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            async for _ in shell.stream(cwd="/tmp", prompt="test", auto_approve=False):
+                pass
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        assert "--dangerously-skip-permissions" not in cmd_args
+
+    async def test_execute_includes_skip_permissions_by_default(self):
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+        ndjson = [SYSTEM_EVENT, TEXT_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            await shell.execute(cwd="/tmp", prompt="test")
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        assert "--dangerously-skip-permissions" in cmd_args
+
+
 class TestExecuteIntegration:
     async def test_execute_returns_response_with_text_and_cost(self):
         # Arrange

@@ -24,18 +24,19 @@ class AgentShell():
 
     async def execute(
             self,
-            cwd: str, 
+            cwd: str,
             prompt: str,
             allowed_tools: list[str] | None = None,
             model: str | None = None,
             effort: str | None = None,
             include_thinking: bool = False,
+            auto_approve: bool = True,
     ) -> AgentResponse:
 
         if not Path(cwd).is_dir():
-            raise ValueError(f"Directory does not exist: {cwd}") 
+            raise ValueError(f"Directory does not exist: {cwd}")
 
-        try: 
+        try:
             return await self._adapter.execute(
                     cwd=cwd,
                     prompt=prompt,
@@ -43,6 +44,7 @@ class AgentShell():
                     model=model,
                     effort=effort,
                     include_thinking=include_thinking,
+                    auto_approve=auto_approve,
             )
         except KeyboardInterrupt:
             await self._adapter.cancel()
@@ -50,17 +52,18 @@ class AgentShell():
 
     async def stream(
             self,
-            cwd: str, 
+            cwd: str,
             prompt: str,
             allowed_tools: list[str] | None = None,
             model: str | None = None,
             effort: str | None = None,
             include_thinking: bool = False,
+            auto_approve: bool = True,
     ) -> AsyncIterator[StreamEvent]:
 
         if not Path(cwd).is_dir():
-            raise ValueError(f"Directory does not exist: {cwd}") 
-        
+            raise ValueError(f"Directory does not exist: {cwd}")
+
         try:
             async for chunk in self._adapter.stream(
                     cwd=cwd,
@@ -69,6 +72,7 @@ class AgentShell():
                     model=model,
                     effort=effort,
                     include_thinking=include_thinking,
+                    auto_approve=auto_approve,
             ):
                 yield chunk
         except KeyboardInterrupt:

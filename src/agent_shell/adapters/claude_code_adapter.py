@@ -17,6 +17,7 @@ class ClaudeCodeAdapter():
             model: str | None = None,
             effort: str | None = None,
             include_thinking: bool = False,
+            auto_approve: bool = True,
     ) -> AgentResponse:
         chunks: list[StreamEvent] = []
         async for event in self.stream(
@@ -26,6 +27,7 @@ class ClaudeCodeAdapter():
             model=model,
             effort=effort,
             include_thinking=include_thinking,
+            auto_approve=auto_approve,
         ):
             chunks.append(event)
 
@@ -34,19 +36,23 @@ class ClaudeCodeAdapter():
         return AgentResponse(response=text, cost=cost)
 
     async def stream(
-            self, 
-            cwd: str, 
-            prompt: str, 
-            allowed_tools: list[str] | None = None, 
+            self,
+            cwd: str,
+            prompt: str,
+            allowed_tools: list[str] | None = None,
             model: str | None = None,
             effort: str | None = None,
             include_thinking: bool = False,
+            auto_approve: bool = True,
     ) -> AsyncIterator[StreamEvent]:
         cmd = [
             "claude", "-p", prompt,
-           "--output-format", "stream-json",
-            "--verbose"
+            "--output-format", "stream-json",
+            "--verbose",
         ]
+
+        if auto_approve:
+            cmd.append("--dangerously-skip-permissions")
 
         if allowed_tools:
             cmd.extend(["--allowed-tools", ",".join(allowed_tools)])

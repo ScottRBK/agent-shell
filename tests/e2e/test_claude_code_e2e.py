@@ -70,6 +70,43 @@ class TestStreamE2E:
         assert len(tool_events) >= 1, "Expected at least one tool_use event"
 
 
+class TestAutoApproveE2E:
+    async def test_stream_uses_tools_with_default_auto_approve(self):
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+
+        # Act
+        events: list[StreamEvent] = []
+        async for event in shell.stream(
+            cwd="/tmp",
+            prompt="Use the Bash tool to echo 'auto approved'",
+            allowed_tools=["Bash"],
+            model="haiku",
+        ):
+            events.append(event)
+
+        # Assert
+        tool_events = [e for e in events if e.type == "tool_use"]
+        assert len(tool_events) >= 1, "Expected tool use with default auto_approve=True"
+
+    async def test_execute_completes_with_auto_approve_disabled(self):
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+
+        # Act
+        response = await shell.execute(
+            cwd="/tmp",
+            prompt="Respond with exactly: no tools needed",
+            allowed_tools=[],
+            model="haiku",
+            auto_approve=False,
+        )
+
+        # Assert
+        assert isinstance(response, AgentResponse)
+        assert len(response.response) > 0, "Expected non-empty response"
+
+
 class TestExecuteE2E:
     async def test_execute_returns_response_with_text_and_cost(self):
         # Arrange
