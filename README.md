@@ -2,31 +2,54 @@
 Agent Shell is a light weight abstraction for executing a cli coding agent headlessly
 and returning the output that can be used programatically as a unified contract
 
+## Examples
 
-## Example
+### Execute
 
 ```python
-from agent_shell import AgentShell
+from agent_shell.shell import AgentShell
+from agent_shell.models.agent import AgentType
 
-agent_shell = AgentShell(agent_type="claude_code")
+shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
 
-response = agent_shell.execute(
-        cwd="/~/dev/agentshell",
-        prompt="Can you tell me about this project?",
-        allowed_tools="Read,Glob,Grep",
-        model="sonnet"
+response = await shell.execute(
+    cwd="/path/to/project",
+    prompt="Can you tell me about this project?",
+    allowed_tools=["Read", "Glob", "Grep"],
+    model="sonnet",
 )
 
-print("Agents Response:\n\n")
-print(response)
+print(response.response)
+print(f"Cost: ${response.cost:.4f}")
+```
+
+### Stream
+
+```python
+from agent_shell.shell import AgentShell
+from agent_shell.models.agent import AgentType
+
+shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+
+async for event in shell.stream(
+    cwd="/path/to/project",
+    prompt="Refactor the auth module",
+    allowed_tools=["Read", "Edit", "Bash"],
+    model="sonnet",
+    effort="high",
+    include_thinking=True,
+):
+    print(f"[{event.type}] {event.content}")
 ```
 
 ## Supported CLI Agents:
-[] Claude Code
-[] OpenCode
-[] Gemini CLI
-[] Copilot CLI
-[] Codex
+
+- [x] Claude Code
+- [ ] OpenCode
+- [ ] Gemini CLI
+- [ ] Copilot CLI
+- [ ] Codex
+
 
 
 
