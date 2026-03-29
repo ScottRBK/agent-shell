@@ -15,6 +15,7 @@ class ClaudeCodeAdapter():
             prompt: str,
             allowed_tools: list[str] | None = None,
             model: str | None = None,
+            effort: str | None = None,
             include_thinking: bool = False,
     ) -> AgentResponse:
         chunks: list[StreamEvent] = []
@@ -23,6 +24,7 @@ class ClaudeCodeAdapter():
             prompt=prompt,
             allowed_tools=allowed_tools,
             model=model,
+            effort=effort,
             include_thinking=include_thinking,
         ):
             chunks.append(event)
@@ -37,6 +39,7 @@ class ClaudeCodeAdapter():
             prompt: str, 
             allowed_tools: list[str] | None = None, 
             model: str | None = None,
+            effort: str | None = None,
             include_thinking: bool = False,
     ) -> AsyncIterator[StreamEvent]:
         cmd = [
@@ -50,6 +53,9 @@ class ClaudeCodeAdapter():
 
         if model:
             cmd.extend(["--model", model])
+        
+        if effort: 
+            cmd.extend(["--effort", effort])
 
         process = await asyncio.create_subprocess_exec(
                 *cmd,

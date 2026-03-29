@@ -28,6 +28,7 @@ class AgentShell():
             prompt: str,
             allowed_tools: list[str] | None = None,
             model: str | None = None,
+            effort: str | None = None,
             include_thinking: bool = False,
     ) -> AgentResponse:
 
@@ -39,7 +40,9 @@ class AgentShell():
                     cwd=cwd,
                     prompt=prompt,
                     allowed_tools=allowed_tools,
-                    model=model
+                    model=model,
+                    effort=effort,
+                    include_thinking=include_thinking,
             )
         except KeyboardInterrupt:
             await self._adapter.cancel()
@@ -51,6 +54,7 @@ class AgentShell():
             prompt: str,
             allowed_tools: list[str] | None = None,
             model: str | None = None,
+            effort: str | None = None,
             include_thinking: bool = False,
     ) -> AsyncIterator[StreamEvent]:
 
@@ -63,6 +67,8 @@ class AgentShell():
                     prompt=prompt,
                     allowed_tools=allowed_tools,
                     model=model,
+                    effort=effort,
+                    include_thinking=include_thinking,
             ):
                 yield chunk
         except KeyboardInterrupt:

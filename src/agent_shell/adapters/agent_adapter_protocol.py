@@ -8,6 +8,7 @@ class AgentAdapter(Protocol):
             prompt: str, 
             allowed_tools: list[str] | None = None, 
             model: str | None = None,
+            effort: str | None = None,
             include_thinking: bool = False,
     ) -> AgentResponse:
         ...
@@ -18,6 +19,7 @@ class AgentAdapter(Protocol):
             prompt: str, 
             allowed_tools: list[str] | None = None, 
             model: str | None = None,
+            effort: str | None = None,
             include_thinking: bool = False,
     ) -> AsyncIterator[StreamEvent]:
         ...
