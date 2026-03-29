@@ -43,10 +43,12 @@ class TestStream:
                 events.append(event)
 
         # Assert
-        assert len(events) == 3  # system event is ignored
-        assert events[0].type == "text"
-        assert events[1].type == "tool_use"
-        assert events[2].type == "result"
+        assert len(events) == 4
+        assert events[0].type == "system"
+        assert events[0].session_id == "test-session"
+        assert events[1].type == "text"
+        assert events[2].type == "tool_use"
+        assert events[3].type == "result"
 
     async def test_yields_error_event_on_nonzero_exit_with_stderr(self):
         # Arrange

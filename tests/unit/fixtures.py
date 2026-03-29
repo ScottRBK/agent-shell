@@ -88,6 +88,7 @@ RESULT_EVENT_SUCCESS = {
     "is_error": False,
     "duration_ms": 10370,
     "total_cost_usd": 0.16098,
+    "session_id": "test-session",
 }
 
 RESULT_EVENT_ERROR = {
@@ -96,6 +97,7 @@ RESULT_EVENT_ERROR = {
     "is_error": True,
     "duration_ms": 5000,
     "total_cost_usd": 0.05,
+    "session_id": "test-session",
 }
 
 UNKNOWN_EVENT = {

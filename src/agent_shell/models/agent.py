@@ -10,13 +10,15 @@ class AgentType(StrEnum):
 
 @dataclass
 class AgentResponse:
-    response: str 
-    cost: float 
+    response: str
+    cost: float
+    session_id: str | None = None
 
-@dataclass 
+@dataclass
 class StreamEvent:
     type: str
-    content: str 
+    content: str
     cost: float = 0.0
     duration: float = 0.0
+    session_id: str | None = None
 

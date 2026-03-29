@@ -11,6 +11,7 @@ class AgentAdapter(Protocol):
             effort: str | None = None,
             include_thinking: bool = False,
             auto_approve: bool = True,
+            session_id: str | None = None,
     ) -> AgentResponse:
         ...
 
@@ -23,6 +24,7 @@ class AgentAdapter(Protocol):
             effort: str | None = None,
             include_thinking: bool = False,
             auto_approve: bool = True,
+            session_id: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         ...
 

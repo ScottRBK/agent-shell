@@ -186,3 +186,69 @@ class TestExecuteIntegration:
         cmd_args = mock_exec.call_args[0]
         assert "--effort" in cmd_args
         assert cmd_args[cmd_args.index("--effort") + 1] == "high"
+
+
+class TestSessionIntegration:
+    async def test_stream_captures_session_id(self):
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+        ndjson = [SYSTEM_EVENT, TEXT_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        events: list[StreamEvent] = []
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+            async for event in shell.stream(cwd="/tmp", prompt="test"):
+                events.append(event)
+
+        # Assert
+        session_events = [e for e in events if e.session_id]
+        assert len(session_events) >= 1, "Expected at least one event with session_id"
+        assert session_events[0].session_id == "test-session"
+
+    async def test_stream_passes_resume_flag_when_session_id_provided(self):
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+        ndjson = [SYSTEM_EVENT, TEXT_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            async for _ in shell.stream(
+                cwd="/tmp", prompt="test", session_id="abc-123"
+            ):
+                pass
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        assert "--resume" in cmd_args
+        assert cmd_args[cmd_args.index("--resume") + 1] == "abc-123"
+
+    async def test_stream_omits_resume_flag_when_no_session_id(self):
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+        ndjson = [SYSTEM_EVENT, TEXT_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            async for _ in shell.stream(cwd="/tmp", prompt="test"):
+                pass
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        assert "--resume" not in cmd_args
+
+    async def test_execute_returns_session_id(self):
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+        ndjson = [SYSTEM_EVENT, TEXT_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+            response = await shell.execute(cwd="/tmp", prompt="test")
+
+        # Assert
+        assert isinstance(response, AgentResponse)
+        assert response.session_id == "test-session"

@@ -113,8 +113,8 @@ class TestParseEventResult:
         assert events[0].duration == 5.0
 
 
-class TestParseEventIgnored:
-    def test_ignores_system_event(self):
+class TestParseEventSystem:
+    def test_parses_session_id_from_system_event(self):
         # Arrange
         adapter = ClaudeCodeAdapter()
 
@@ -122,8 +122,48 @@ class TestParseEventIgnored:
         events = adapter._parse_event(SYSTEM_EVENT, include_thinking=False)
 
         # Assert
+        assert len(events) == 1
+        assert events[0].type == "system"
+        assert events[0].session_id == "test-session"
+
+    def test_ignores_system_event_without_session_id(self):
+        # Arrange
+        adapter = ClaudeCodeAdapter()
+        event = {"type": "system", "subtype": "init"}
+
+        # Act
+        events = adapter._parse_event(event, include_thinking=False)
+
+        # Assert
         assert len(events) == 0
 
+
+class TestParseEventResultSessionId:
+    def test_result_event_includes_session_id(self):
+        # Arrange
+        adapter = ClaudeCodeAdapter()
+
+        # Act
+        events = adapter._parse_event(RESULT_EVENT_SUCCESS, include_thinking=False)
+
+        # Assert
+        assert len(events) == 1
+        assert events[0].session_id == "test-session"
+
+    def test_result_event_without_session_id(self):
+        # Arrange
+        adapter = ClaudeCodeAdapter()
+        event = {"type": "result", "is_error": False, "duration_ms": 1000, "total_cost_usd": 0.01}
+
+        # Act
+        events = adapter._parse_event(event, include_thinking=False)
+
+        # Assert
+        assert len(events) == 1
+        assert events[0].session_id is None
+
+
+class TestParseEventIgnored:
     def test_ignores_user_tool_result_event(self):
         # Arrange
         adapter = ClaudeCodeAdapter()

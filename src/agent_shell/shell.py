@@ -31,6 +31,7 @@ class AgentShell():
             effort: str | None = None,
             include_thinking: bool = False,
             auto_approve: bool = True,
+            session_id: str | None = None,
     ) -> AgentResponse:
 
         if not Path(cwd).is_dir():
@@ -45,6 +46,7 @@ class AgentShell():
                     effort=effort,
                     include_thinking=include_thinking,
                     auto_approve=auto_approve,
+                    session_id=session_id,
             )
         except KeyboardInterrupt:
             await self._adapter.cancel()
@@ -59,6 +61,7 @@ class AgentShell():
             effort: str | None = None,
             include_thinking: bool = False,
             auto_approve: bool = True,
+            session_id: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
 
         if not Path(cwd).is_dir():
@@ -73,6 +76,7 @@ class AgentShell():
                     effort=effort,
                     include_thinking=include_thinking,
                     auto_approve=auto_approve,
+                    session_id=session_id,
             ):
                 yield chunk
         except KeyboardInterrupt:

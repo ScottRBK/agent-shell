@@ -18,6 +18,7 @@ class ClaudeCodeAdapter():
             effort: str | None = None,
             include_thinking: bool = False,
             auto_approve: bool = True,
+            session_id: str | None = None,
     ) -> AgentResponse:
         chunks: list[StreamEvent] = []
         async for event in self.stream(
@@ -28,12 +29,14 @@ class ClaudeCodeAdapter():
             effort=effort,
             include_thinking=include_thinking,
             auto_approve=auto_approve,
+            session_id=session_id,
         ):
             chunks.append(event)
 
         text = "\n".join(e.content for e in chunks if e.type == "text")
         cost = next((e.cost for e in reversed(chunks) if e.type == "result"), 0.0)
-        return AgentResponse(response=text, cost=cost)
+        returned_session_id = next((e.session_id for e in chunks if e.session_id), None)
+        return AgentResponse(response=text, cost=cost, session_id=returned_session_id)
 
     async def stream(
             self,
@@ -44,6 +47,7 @@ class ClaudeCodeAdapter():
             effort: str | None = None,
             include_thinking: bool = False,
             auto_approve: bool = True,
+            session_id: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         cmd = [
             "claude", "-p", prompt,
@@ -59,9 +63,12 @@ class ClaudeCodeAdapter():
 
         if model:
             cmd.extend(["--model", model])
-        
-        if effort: 
+
+        if effort:
             cmd.extend(["--effort", effort])
+
+        if session_id:
+            cmd.extend(["--resume", session_id])
 
         process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -111,9 +118,14 @@ class ClaudeCodeAdapter():
 
     def _parse_event(self, event: dict, include_thinking: bool) -> list[StreamEvent]:
         t = event.get("type", "")
+        session_id = event.get("session_id")
         events = []
 
-        if t == "assistant":
+        if t == "system":
+            if session_id:
+                events.append(StreamEvent(type="system", content="", session_id=session_id))
+
+        elif t == "assistant":
             for item in event.get("message", {}).get("content", []):
                 if item.get("type") == "text":
                     events.append(StreamEvent(type="text", content=item["text"]))
@@ -127,9 +139,9 @@ class ClaudeCodeAdapter():
             duration = (event.get("duration_ms", 0) or 0) / 1000
             is_error = event.get("is_error", False)
             status = "error" if is_error else "ok"
-            events.append(StreamEvent(type="result", content=status, cost=cost, duration=duration))
+            events.append(StreamEvent(type="result", content=status, cost=cost, duration=duration, session_id=session_id))
 
-        return events 
+        return events
 
     async def cancel(self) -> None:
           for process in self._active_processes:
