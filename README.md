@@ -55,10 +55,37 @@ async for event in shell.stream(
         print(f"[{event.type}] {event.content}")
 ```
 
+### OpenCode
+
+```python
+from agent_shell.shell import AgentShell
+from agent_shell.models.agent import AgentType
+
+shell = AgentShell(agent_type=AgentType.OPENCODE)
+
+response = await shell.execute(
+    cwd="/path/to/project",
+    prompt="Can you tell me about this project?",
+    model="anthropic/claude-sonnet-4-5",
+)
+
+print(response.response)
+print(f"Session: {response.session_id}")
+
+# Resume the conversation using the session_id
+follow_up = await shell.execute(
+    cwd="/path/to/project",
+    prompt="Now refactor the auth module based on your findings",
+    session_id=response.session_id,
+)
+```
+
+> **Note:** OpenCode's `run` mode auto-approves all tools. The `allowed_tools` and `effort` parameters are configured via `opencode.json`, not CLI flags.
+
 ## Supported CLI Agents:
 
 - [x] Claude Code
-- [ ] OpenCode
+- [x] OpenCode
 - [ ] Gemini CLI
 - [ ] Copilot CLI
 - [ ] Codex
