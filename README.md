@@ -2,6 +2,18 @@
 Agent Shell is a light weight abstraction for executing a cli coding agent headlessly
 and returning the output that can be used programatically as a unified contract
 
+## Installation
+
+```bash
+uv add agent-shell-py
+```
+
+or with pip:
+
+```bash
+pip install agent-shell-py
+```
+
 ## Examples
 
 ### Execute
@@ -76,6 +88,7 @@ print(f"Session: {response.session_id}")
 follow_up = await shell.execute(
     cwd="/path/to/project",
     prompt="Now refactor the auth module based on your findings",
+    model="anthropic/claude-sonnet-4-5",
     session_id=response.session_id,
 )
 ```
