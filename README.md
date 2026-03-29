@@ -3,7 +3,7 @@ Agent Shell is a light weight abstraction for executing a cli coding agent headl
 and returning the output that can be used programatically as a unified contract
 
 
-## Example 
+## Example
 
 ```python
 from agent_shell import AgentShell
@@ -22,7 +22,7 @@ print(response)
 ```
 
 ## Supported CLI Agents:
-[] Claude Code 
+[] Claude Code
 [] OpenCode
 [] Gemini CLI
 [] Copilot CLI
