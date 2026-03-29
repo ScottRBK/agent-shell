@@ -1,5 +1,5 @@
 [project]
-name = "agent-shell"
+name = "agent-shell-py"
 version = "0.1.0"
 description = "A lightweight abstraction for executing CLI coding agents headlessly"
 readme = "README.md"
