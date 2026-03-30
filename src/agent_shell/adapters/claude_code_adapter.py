@@ -1,9 +1,12 @@
 import asyncio 
 import json 
 import os
+import logging 
 from typing import AsyncIterator
 
 from agent_shell.models.agent import AgentResponse, StreamEvent
+
+logger = logging.getLogger("agent_shell.claude_code_adapter")
 
 class ClaudeCodeAdapter():
     def __init__(self):
@@ -70,6 +73,9 @@ class ClaudeCodeAdapter():
         if session_id:
             cmd.extend(["--resume", session_id])
 
+        logger.debug("Command: %s", cmd)
+        logger.info("Process started (cwd=%s)", os.path.abspath(cwd))
+
         process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.DEVNULL,
@@ -87,13 +93,15 @@ class ClaudeCodeAdapter():
             if not chunk:
                 if buffer.strip():
                     try:
+                        raw = json.loads(buffer)
+                        logger.debug("Raw event: %s", raw)
                         for event in self._parse_event(
-                            event=json.loads(buffer),
+                            event=raw,
                             include_thinking=include_thinking
                             ):
                                 yield event
                     except json.JSONDecodeError:
-                        pass
+                        logger.warning("Skipping malformed JSON: %s", buffer[:200])
                 break
 
             buffer += chunk.decode("utf-8")
@@ -101,12 +109,14 @@ class ClaudeCodeAdapter():
                 line, buffer = buffer.split("\n", 1)
                 if line.strip():
                     try:
+                        raw = json.loads(line)
+                        logger.debug("Raw event: %s", raw)
                         for event in self._parse_event(
-                            event=json.loads(line),
+                            event=raw,
                             include_thinking=include_thinking):
                             yield event
                     except json.JSONDecodeError:
-                        pass
+                        logger.warning("Skipping malformed JSON: %s", line[:200])
 
         await process.wait()
         if process in self._active_processes:
@@ -114,7 +124,9 @@ class ClaudeCodeAdapter():
 
         stderr = await process.stderr.read()
         if stderr and process.returncode != 0:
-            yield StreamEvent(type="error", content=stderr.decode("utf-8")[-500:])
+            error_msg = stderr.decode("utf-8")[-500:]
+            logger.warning("Process exited with code %d: %s", process.returncode, error_msg)
+            yield StreamEvent(type="error", content=error_msg)
 
     def _parse_event(self, event: dict, include_thinking: bool) -> list[StreamEvent]:
         t = event.get("type", "")
@@ -123,6 +135,7 @@ class ClaudeCodeAdapter():
 
         if t == "system":
             if session_id:
+                logger.info("Session: %s", session_id)
                 events.append(StreamEvent(type="system", content="", session_id=session_id))
 
         elif t == "assistant":
@@ -130,7 +143,9 @@ class ClaudeCodeAdapter():
                 if item.get("type") == "text":
                     events.append(StreamEvent(type="text", content=item["text"]))
                 elif item.get("type") == "tool_use":
-                    events.append(StreamEvent(type="tool_use", content=item.get("name", "")))
+                    tool_name = item.get("name", "")
+                    logger.info("Tool call: %s", tool_name)
+                    events.append(StreamEvent(type="tool_use", content=tool_name))
                 elif item.get("type") == "thinking" and include_thinking:
                     events.append(StreamEvent(type="thinking", content=item.get("thinking", "")))
 
@@ -139,6 +154,7 @@ class ClaudeCodeAdapter():
             duration = (event.get("duration_ms", 0) or 0) / 1000
             is_error = event.get("is_error", False)
             status = "error" if is_error else "ok"
+            logger.info("Result: %s (cost=$%.4f, duration=%.1fs)", status, cost, duration)
             events.append(StreamEvent(type="result", content=status, cost=cost, duration=duration, session_id=session_id))
 
         return events

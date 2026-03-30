@@ -1,9 +1,12 @@
 import asyncio
 import json
+import logging
 import os
 from typing import AsyncIterator
 
 from agent_shell.models.agent import AgentResponse, StreamEvent
+
+logger = logging.getLogger("agent_shell.opencode_adapter")
 
 
 class OpenCodeAdapter():
@@ -60,6 +63,9 @@ class OpenCodeAdapter():
 
         cmd.append(prompt)
 
+        logger.debug("Command: %s", cmd)
+        logger.info("Process started (cwd=%s)", os.path.abspath(cwd))
+
         process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.DEVNULL,
@@ -77,13 +83,15 @@ class OpenCodeAdapter():
             if not chunk:
                 if buffer.strip():
                     try:
+                        raw = json.loads(buffer)
+                        logger.debug("Raw event: %s", raw)
                         for event in self._parse_event(
-                            event=json.loads(buffer),
+                            event=raw,
                             include_thinking=include_thinking,
                         ):
                             yield event
                     except json.JSONDecodeError:
-                        pass
+                        logger.warning("Skipping malformed JSON: %s", buffer[:200])
                 break
 
             buffer += chunk.decode("utf-8")
@@ -91,13 +99,15 @@ class OpenCodeAdapter():
                 line, buffer = buffer.split("\n", 1)
                 if line.strip():
                     try:
+                        raw = json.loads(line)
+                        logger.debug("Raw event: %s", raw)
                         for event in self._parse_event(
-                            event=json.loads(line),
+                            event=raw,
                             include_thinking=include_thinking,
                         ):
                             yield event
                     except json.JSONDecodeError:
-                        pass
+                        logger.warning("Skipping malformed JSON: %s", line[:200])
 
         await process.wait()
         if process in self._active_processes:
@@ -105,7 +115,9 @@ class OpenCodeAdapter():
 
         stderr = await process.stderr.read()
         if stderr and process.returncode != 0:
-            yield StreamEvent(type="error", content=stderr.decode("utf-8")[-500:])
+            error_msg = stderr.decode("utf-8")[-500:]
+            logger.warning("Process exited with code %d: %s", process.returncode, error_msg)
+            yield StreamEvent(type="error", content=error_msg)
 
     def _parse_event(self, event: dict, include_thinking: bool) -> list[StreamEvent]:
         t = event.get("type", "")
@@ -113,6 +125,7 @@ class OpenCodeAdapter():
         events = []
 
         if t == "step_start":
+            logger.info("Session: %s", session_id)
             events.append(StreamEvent(type="system", content="", session_id=session_id))
 
         elif t == "text":
@@ -121,12 +134,14 @@ class OpenCodeAdapter():
 
         elif t == "tool_use":
             tool_name = event.get("part", {}).get("tool", "")
+            logger.info("Tool call: %s", tool_name)
             events.append(StreamEvent(type="tool_use", content=tool_name))
 
         elif t == "step_finish":
             reason = event.get("part", {}).get("reason", "")
             if reason == "stop":
                 cost = event.get("part", {}).get("cost", 0) or 0
+                logger.info("Result: ok (cost=$%.4f)", cost)
                 events.append(StreamEvent(
                     type="result",
                     content="ok",
@@ -136,6 +151,7 @@ class OpenCodeAdapter():
 
         elif t == "error":
             message = event.get("error", {}).get("data", {}).get("message", "Unknown error")
+            logger.warning("Error: %s", message)
             events.append(StreamEvent(type="error", content=message))
 
         return events

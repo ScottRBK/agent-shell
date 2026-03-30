@@ -95,6 +95,19 @@ follow_up = await shell.execute(
 
 > **Note:** OpenCode's `run` mode auto-approves all tools. The `allowed_tools` and `effort` parameters are configured via `opencode.json`, not CLI flags.
 
+## Logging
+
+Agent Shell uses Python's standard `logging` module. Configure the `agent_shell` logger to capture tool calls, session IDs, costs, and errors:
+
+```python
+import logging
+
+logging.getLogger("agent_shell").setLevel(logging.INFO)
+logging.getLogger("agent_shell").addHandler(logging.StreamHandler())
+```
+
+Set to `DEBUG` for raw JSON events and full command arguments.
+
 ## Supported CLI Agents:
 
 - [x] Claude Code
