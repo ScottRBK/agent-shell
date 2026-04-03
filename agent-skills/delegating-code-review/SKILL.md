@@ -138,6 +138,7 @@ For each gap, describe the test case that should exist and why it matters.
 
 | Mistake | Fix |
 |---------|-----|
+| Not checking for empty responses from `execute()` | `execute()` drops error events — an empty `review.response` likely means the agent failed. Use `stream()` if you need failure detection. |
 | Manually capturing diffs and passing them in the prompt | Let the reviewer run `git diff` itself — it has tools |
 | Using OpenCode and assuming `allowed_tools` works | OpenCode ignores tool restrictions — use prompt instructions or use Claude Code |
 | Reviewing with the same model that wrote the code | Use a different model or agent type for independence |

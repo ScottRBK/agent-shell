@@ -49,8 +49,8 @@ class StreamEvent:
 | `text` | Agent produces output | The agent's response text (may arrive in chunks) | |
 | `thinking` | Agent reasons (Claude Code + `stream()` only, requires `include_thinking=True`) | Chain-of-thought text | |
 | `tool_use` | Agent invokes a tool | Tool name only (no arguments) | |
-| `result` | Agent finishes | `"ok"` or `"error"` | `cost` and `duration` are populated. `duration` is only set by Claude Code. |
-| `error` | CLI process fails (non-zero exit) | Stderr output (last 500 chars) | |
+| `result` | Agent finishes | `"ok"` on success, `"error"` on Claude Code agent-level failure | `cost` and `duration` are populated. `duration` is only set by Claude Code. OpenCode emits failures as `error` events instead. |
+| `error` | Agent or CLI process fails | Error message or stderr output (last 500 chars) | OpenCode emits errors as this event type, not as `result`. |
 
 ## AgentShell Class
 
@@ -128,7 +128,7 @@ class AgentAdapter(Protocol):
 - `model` accepts aliases like `"sonnet"`, `"opus"`, or full IDs like `"claude-sonnet-4-6"`
 - `allowed_tools` maps to Claude Code tool names: `"Read"`, `"Edit"`, `"Write"`, `"Bash"`, `"Glob"`, `"Grep"`, `"Agent"`, etc.
 - `effort` maps to `--effort` flag
-- `include_thinking` enables `--thinking` flag
+- `include_thinking` does **not** add a CLI flag. It only controls whether thinking events already present in the streamed output are yielded or filtered out. Claude Code may include thinking content in its output by default depending on the model.
 - Output is NDJSON with event types: `system`, `assistant` (parsed into text/tool_use/thinking), `result`
 
 ### OpenCode

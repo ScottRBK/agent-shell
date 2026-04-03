@@ -108,7 +108,7 @@ refactor = await shell.execute(
 | `allowed_tools` | `list[str] \| None` | `None` | Restrict which tools the agent can use. `None` = all tools. **Claude Code only.** |
 | `model` | `str \| None` | `None` | Model alias or full name (e.g. `"sonnet"`, `"claude-sonnet-4-6"`) |
 | `effort` | `str \| None` | `None` | Reasoning effort: `"low"`, `"medium"`, `"high"`, `"max"`. **Claude Code only.** |
-| `include_thinking` | `bool` | `False` | Include chain-of-thought in `stream()` events. **Claude Code only. Ignored by `execute()`.** |
+| `include_thinking` | `bool` | `False` | Filter only: yields thinking events in `stream()` if already present in CLI output. Does not add a CLI flag. **Claude Code `stream()` only. Dropped by `execute()`.** |
 | `auto_approve` | `bool` | `True` | Skip tool permission prompts. **Claude Code only.** |
 | `session_id` | `str \| None` | `None` | Resume a previous session |
 
@@ -130,6 +130,8 @@ Gemini CLI, Copilot CLI, and Codex have enum values but no adapter yet.
 Restrict what the agent can do by passing `allowed_tools`. This is critical for safety when delegating work.
 
 > **Important:** Tool scoping only works with Claude Code. OpenCode ignores `allowed_tools` — the agent will have access to all tools regardless of what you pass. Do not use OpenCode for safety-sensitive delegation where tool restriction is required.
+
+> **Gotcha:** `allowed_tools=[]` (empty list) is falsy in Python, so no `--allowed-tools` flag is sent — the agent gets **full tool access**. To restrict tools, always pass a non-empty list. There is no way to disable all tools via this parameter.
 
 ```python
 # Read-only analysis (Claude Code)
@@ -175,12 +177,20 @@ except KeyboardInterrupt:
     print("Agent cancelled")
 ```
 
-**CLI agent failures do not raise exceptions.** If the agent process exits with a non-zero code, `execute()` returns an `AgentResponse` with whatever text was accumulated (which may be empty), and `stream()` yields a `StreamEvent(type="error")` with the stderr output. Always check for error events when streaming:
+**CLI agent failures do not raise exceptions.** `execute()` returns an `AgentResponse` with whatever text was accumulated (which may be empty) and gives no indication of failure. When streaming, failures surface in two ways:
+
+- `StreamEvent(type="error")` — CLI process errors or OpenCode agent errors
+- `StreamEvent(type="result", content="error")` — Claude Code agent-level failures
+
+Check for both when streaming:
 
 ```python
 async for event in shell.stream(cwd=project_path, prompt="do something"):
     if event.type == "error":
         print(f"Agent error: {event.content}")
+        break
+    elif event.type == "result" and event.content == "error":
+        print("Agent reported failure")
         break
     elif event.type == "text":
         print(event.content)
