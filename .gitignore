@@ -5,6 +5,7 @@ build/
 dist/
 wheels/
 *.egg-info
+src/agent_shell/_version.py
 
 # Virtual environments
 .venv
