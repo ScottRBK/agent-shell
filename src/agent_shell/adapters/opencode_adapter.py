@@ -5,6 +5,7 @@ import os
 from typing import AsyncIterator
 
 from agent_shell.models.agent import AgentResponse, StreamEvent
+from agent_shell.process_cleanup import register_process_group, unregister_process_group
 
 logger = logging.getLogger("agent_shell.opencode_adapter")
 
@@ -76,6 +77,8 @@ class OpenCodeAdapter():
         )
 
         self._active_processes.append(process)
+        # setsid makes the child a session leader, so pgid == pid
+        register_process_group(process.pid)
 
         buffer = ""
         while True:
@@ -112,6 +115,7 @@ class OpenCodeAdapter():
         await process.wait()
         if process in self._active_processes:
             self._active_processes.remove(process)
+        unregister_process_group(process.pid)
 
         stderr = await process.stderr.read()
         if stderr and process.returncode != 0:
@@ -159,7 +163,9 @@ class OpenCodeAdapter():
     async def cancel(self) -> None:
         for process in self._active_processes:
             try:
-                os.killpg(os.getpgid(process.pid), 9)
+                pgid = os.getpgid(process.pid)
+                os.killpg(pgid, 9)
+                unregister_process_group(pgid)
             except ProcessLookupError:
                 pass
         self._active_processes.clear()

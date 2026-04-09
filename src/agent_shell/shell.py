@@ -1,4 +1,5 @@
-from pathlib import Path 
+import asyncio
+from pathlib import Path
 from typing import AsyncIterator
 
 from agent_shell.models.agent import AgentType, AgentResponse, StreamEvent
@@ -50,7 +51,7 @@ class AgentShell():
                     auto_approve=auto_approve,
                     session_id=session_id,
             )
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, asyncio.CancelledError):
             await self._adapter.cancel()
             raise
 
@@ -81,7 +82,7 @@ class AgentShell():
                     session_id=session_id,
             ):
                 yield chunk
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, asyncio.CancelledError):
             await self._adapter.cancel()
             raise
 
