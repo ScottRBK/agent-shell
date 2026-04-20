@@ -7,10 +7,10 @@ from typing import AsyncIterator
 from agent_shell.models.agent import AgentResponse, StreamEvent
 from agent_shell.process_cleanup import register_process_group, unregister_process_group
 
-logger = logging.getLogger("agent_shell.opencode_adapter")
+logger = logging.getLogger("agent_shell.copilot_cli_adapter")
 
 
-class OpenCodeAdapter():
+class CopilotCLIAdapter:
     def __init__(self):
         self._active_processes = []
 
@@ -55,15 +55,30 @@ class OpenCodeAdapter():
             auto_approve: bool = True,
             session_id: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        cmd = ["opencode", "run", "--format", "json"]
+        cmd = [
+            "copilot", "-p", prompt,
+            "--output-format", "json",
+            "--silent",
+        ]
+
+        if auto_approve:
+            cmd.append("--allow-all-tools")
+
+        if allowed_tools:
+            for tool in allowed_tools:
+                cmd.extend(["--allow-tool", tool])
 
         if model:
-            cmd.extend(["-m", model])
+            cmd.extend(["--model", model])
+
+        if effort:
+            cmd.extend(["--effort", effort])
 
         if session_id:
-            cmd.extend(["-s", session_id])
+            cmd.extend(["--resume", session_id])
 
-        cmd.append(prompt)
+        if include_thinking:
+            cmd.append("--enable-reasoning-summaries")
 
         logger.debug("Command: %s", cmd)
         logger.info("Process started (cwd=%s)", os.path.abspath(cwd))
@@ -78,7 +93,6 @@ class OpenCodeAdapter():
         )
 
         self._active_processes.append(process)
-        # setsid makes the child a session leader, so pgid == pid
         register_process_group(process.pid)
 
         buffer = ""
@@ -126,38 +140,44 @@ class OpenCodeAdapter():
 
     def _parse_event(self, event: dict, include_thinking: bool) -> list[StreamEvent]:
         t = event.get("type", "")
-        session_id = event.get("sessionID")
         events = []
 
-        if t == "step_start":
-            logger.info("Session: %s", session_id)
-            events.append(StreamEvent(type="system", content="", session_id=session_id))
+        if t == "assistant.reasoning_delta" and include_thinking:
+            delta_content = event.get("data", {}).get("deltaContent", "")
+            if delta_content:
+                events.append(StreamEvent(type="thinking", content=delta_content))
 
-        elif t == "text":
-            text = event.get("part", {}).get("text", "")
-            events.append(StreamEvent(type="text", content=text))
+        elif t == "assistant.reasoning" and include_thinking:
+            content = event.get("data", {}).get("content", "") or event.get("content", "")
+            if content:
+                events.append(StreamEvent(type="thinking", content=content))
 
-        elif t == "tool_use":
-            tool_name = event.get("part", {}).get("tool", "")
-            logger.info("Tool call: %s", tool_name)
-            events.append(StreamEvent(type="tool_use", content=tool_name))
+        elif t == "assistant.message_delta":
+            delta_content = event.get("data", {}).get("deltaContent", "")
+            if delta_content:
+                events.append(StreamEvent(type="text", content=delta_content))
 
-        elif t == "step_finish":
-            reason = event.get("part", {}).get("reason", "")
-            if reason == "stop":
-                cost = event.get("part", {}).get("cost", 0) or 0
-                logger.info("Result: ok (cost=$%.4f)", cost)
-                events.append(StreamEvent(
-                    type="result",
-                    content="ok",
-                    cost=cost,
-                    session_id=session_id,
-                ))
+        elif t == "assistant.message":
+            tool_requests = event.get("data", {}).get("toolRequests", [])
+            for tool in tool_requests:
+                tool_name = tool.get("name", "")
+                logger.info("Tool call: %s", tool_name)
+                events.append(StreamEvent(type="tool_use", content=tool_name))
 
-        elif t == "error":
-            message = event.get("error", {}).get("data", {}).get("message", "Unknown error")
-            logger.warning("Error: %s", message)
-            events.append(StreamEvent(type="error", content=message))
+        elif t == "result":
+            exit_code = event.get("exitCode", 0)
+            status = "ok" if exit_code == 0 else "error"
+            usage = event.get("usage", {})
+            duration = (usage.get("totalApiDurationMs", 0) or 0) / 1000
+            session_id = event.get("sessionId")
+            logger.info("Result: %s (duration=%.1fs)", status, duration)
+            events.append(StreamEvent(
+                type="result",
+                content=status,
+                cost=0.0,
+                duration=duration,
+                session_id=session_id,
+            ))
 
         return events
 
