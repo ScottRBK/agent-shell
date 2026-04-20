@@ -4,6 +4,7 @@ from agent_shell.shell import AgentShell
 from agent_shell.models.agent import AgentType
 from agent_shell.adapters.claude_code_adapter import ClaudeCodeAdapter
 from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
+from agent_shell.adapters.copilot_cli_adapter import CopilotCLIAdapter
 
 
 class TestResolveAdapter:
@@ -21,10 +22,17 @@ class TestResolveAdapter:
         # Assert
         assert isinstance(shell._adapter, OpenCodeAdapter)
 
+    def test_resolves_copilot_cli(self):
+        # Arrange / Act
+        shell = AgentShell(agent_type=AgentType.COPILOT_CLI)
+
+        # Assert
+        assert isinstance(shell._adapter, CopilotCLIAdapter)
+
     def test_raises_for_unsupported_agent(self):
         # Arrange / Act / Assert
         with pytest.raises(ValueError, match="Unsupported agent"):
-            AgentShell(agent_type=AgentType.GEMINI_CLI)
+            AgentShell(agent_type=AgentType.CODEX)
 
 
 class TestCwdValidation:

@@ -6,6 +6,7 @@ from agent_shell.models.agent import AgentType, AgentResponse, StreamEvent
 from agent_shell.adapters.agent_adapter_protocol import AgentAdapter
 from agent_shell.adapters.claude_code_adapter import ClaudeCodeAdapter
 from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
+from agent_shell.adapters.copilot_cli_adapter import CopilotCLIAdapter
 
 
 class AgentShell():
@@ -16,6 +17,7 @@ class AgentShell():
         adapters = {
                 AgentType.CLAUDE_CODE: ClaudeCodeAdapter,
                 AgentType.OPENCODE: OpenCodeAdapter,
+                AgentType.COPILOT_CLI: CopilotCLIAdapter,
         }
         
         adapter_cls = adapters.get(agent_type)

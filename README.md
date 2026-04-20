@@ -108,12 +108,39 @@ logging.getLogger("agent_shell").addHandler(logging.StreamHandler())
 
 Set to `DEBUG` for raw JSON events and full command arguments.
 
+## Copilot CLI
+
+```python
+from agent_shell.shell import AgentShell
+from agent_shell.models.agent import AgentType
+
+shell = AgentShell(agent_type=AgentType.COPILOT_CLI)
+
+response = await shell.execute(
+    cwd="/path/to/project",
+    prompt="Can you tell me about this project?",
+    model="gpt-4o",
+)
+
+print(response.response)
+print(f"Session: {response.session_id}")
+
+# Resume the conversation using the session_id
+follow_up = await shell.execute(
+    cwd="/path/to/project",
+    prompt="Now refactor the auth module based on your findings",
+    session_id=response.session_id,
+)
+```
+
+> **Note:** Copilot CLI doesn't expose pricing data. The `cost` field on `AgentResponse` will always be `0.0`. The `duration` field is populated from `usage.totalApiDurationMs`.
+
 ## Supported CLI Agents:
 
 - [x] Claude Code
 - [x] OpenCode
+- [x] Copilot CLI
 - [ ] Gemini CLI
-- [ ] Copilot CLI
 - [ ] Codex
 
 
