@@ -40,8 +40,9 @@ class CopilotCLIAdapter:
 
         text = "\n".join(e.content for e in chunks if e.type == "text")
         cost = next((e.cost for e in reversed(chunks) if e.type == "result"), 0.0)
+        duration = next((e.duration for e in reversed(chunks) if e.type == "result"), 0.0)
         returned_session_id = next((e.session_id for e in chunks if e.session_id), None)
-        return AgentResponse(response=text, cost=cost, session_id=returned_session_id)
+        return AgentResponse(response=text, cost=cost, session_id=returned_session_id, duration=duration)
 
     async def stream(
             self,
@@ -141,10 +142,7 @@ class CopilotCLIAdapter:
         t = event.get("type", "")
         events = []
 
-        if t == "assistant.turn_start":
-            events.append(StreamEvent(type="system", content=""))
-
-        elif t == "assistant.reasoning_delta" and include_thinking:
+        if t == "assistant.reasoning_delta" and include_thinking:
             delta_content = event.get("data", {}).get("deltaContent", "")
             if delta_content:
                 events.append(StreamEvent(type="thinking", content=delta_content))

@@ -6,7 +6,6 @@ from agent_shell.adapters.copilot_cli_adapter import CopilotCLIAdapter
 from agent_shell.models.agent import StreamEvent
 
 from tests.unit.copilot_fixtures import (
-    TURN_START_EVENT,
     MESSAGE_DELTA_EVENT,
     MESSAGE_EVENT_NO_TOOLS,
     RESULT_EVENT_SUCCESS,
@@ -33,7 +32,7 @@ class TestStream:
     async def test_yields_events_in_order(self):
         # Arrange
         adapter = CopilotCLIAdapter()
-        ndjson = [TURN_START_EVENT, MESSAGE_DELTA_EVENT, MESSAGE_EVENT_NO_TOOLS, RESULT_EVENT_SUCCESS]
+        ndjson = [MESSAGE_DELTA_EVENT, MESSAGE_EVENT_NO_TOOLS, RESULT_EVENT_SUCCESS]
         mock_process = _make_mock_process(ndjson)
 
         # Act
@@ -43,11 +42,10 @@ class TestStream:
                 events.append(event)
 
         # Assert
-        assert len(events) == 3
-        assert events[0].type == "system"
-        assert events[1].type == "text"
-        assert events[1].content == "HEL"
-        assert events[2].type == "result"
+        assert len(events) == 2
+        assert events[0].type == "text"
+        assert events[0].content == "HEL"
+        assert events[1].type == "result"
 
     async def test_yields_error_event_on_nonzero_exit_with_stderr(self):
         # Arrange

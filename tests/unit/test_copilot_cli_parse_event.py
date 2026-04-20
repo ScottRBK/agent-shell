@@ -77,7 +77,7 @@ class TestParseEventUserMessage:
 
 
 class TestParseEventTurnStart:
-    def test_emits_system_event(self):
+    def test_ignores_turn_start_no_event_emitted(self):
         # Arrange
         adapter = CopilotCLIAdapter()
 
@@ -85,10 +85,7 @@ class TestParseEventTurnStart:
         events = adapter._parse_event(TURN_START_EVENT, include_thinking=False)
 
         # Assert
-        assert len(events) == 1
-        assert events[0].type == "system"
-        assert events[0].content == ""
-        assert events[0].session_id is None
+        assert events == []
 
 
 class TestParseEventReasoning:

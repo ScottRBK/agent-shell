@@ -13,6 +13,7 @@ class AgentResponse:
     response: str
     cost: float
     session_id: str | None = None
+    duration: float = 0.0
 
 @dataclass
 class StreamEvent:
