@@ -1,5 +1,5 @@
 from typing import Protocol, AsyncIterator
-from agent_shell.models.agent import AgentResponse, StreamEvent
+from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec
 
 class AgentAdapter(Protocol):
     async def execute(
@@ -29,4 +29,13 @@ class AgentAdapter(Protocol):
         ...
 
     async def cancel(self) -> None:
+        ...
+
+    async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None:
+        ...
+
+    async def remove_mcp_server(self, mcp_server_name: str) -> None: 
+        ...
+
+    async def list_mcp_servers(self) -> list[MCPServerSpec]:
         ...
