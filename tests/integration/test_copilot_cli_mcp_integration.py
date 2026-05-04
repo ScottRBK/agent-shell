@@ -190,3 +190,73 @@ class TestListMcpServers:
         assert listed.type == MCPServerType.HTTP
         assert listed.url == "https://example.com/mcp"
         assert listed.headers == {"Authorization": "Bearer x"}
+
+    async def test_skips_malformed_stdio_entry_with_warning(self, isolated_home):
+        # Arrange
+        config_path = isolated_home / ".copilot" / "mcp-config.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps({
+            "mcpServers": {
+                "broken": {"type": "local", "args": [], "tools": ["*"]},
+                "good": {
+                    "type": "local",
+                    "command": "uvx",
+                    "args": ["forgetful-ai"],
+                    "tools": ["*"],
+                },
+            }
+        }))
+        adapter = CopilotCLIAdapter()
+
+        # Act
+        with pytest.warns(UserWarning, match="broken"):
+            servers = await adapter.list_mcp_servers()
+
+        # Assert
+        assert [s.name for s in servers] == ["good"]
+
+    async def test_skips_malformed_http_entry_with_warning(self, isolated_home):
+        # Arrange
+        config_path = isolated_home / ".copilot" / "mcp-config.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps({
+            "mcpServers": {
+                "no-url": {"type": "http", "tools": ["*"]},
+                "good": {
+                    "type": "http",
+                    "url": "https://example.com/mcp",
+                    "tools": ["*"],
+                },
+            }
+        }))
+        adapter = CopilotCLIAdapter()
+
+        # Act
+        with pytest.warns(UserWarning, match="no-url"):
+            servers = await adapter.list_mcp_servers()
+
+        # Assert
+        assert [s.name for s in servers] == ["good"]
+
+    async def test_skips_non_dict_entry_with_warning(self, isolated_home):
+        # Arrange
+        config_path = isolated_home / ".copilot" / "mcp-config.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps({
+            "mcpServers": {
+                "junk": "not-an-object",
+                "good": {
+                    "type": "local",
+                    "command": "uvx",
+                    "tools": ["*"],
+                },
+            }
+        }))
+        adapter = CopilotCLIAdapter()
+
+        # Act
+        with pytest.warns(UserWarning, match="junk"):
+            servers = await adapter.list_mcp_servers()
+
+        # Assert
+        assert [s.name for s in servers] == ["good"]

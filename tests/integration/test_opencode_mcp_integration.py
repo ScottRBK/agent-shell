@@ -195,3 +195,72 @@ class TestListMcpServers:
         assert listed.type == MCPServerType.HTTP
         assert listed.url == "https://example.com/mcp"
         assert listed.headers == {"Authorization": "Bearer x"}
+
+    async def test_skips_malformed_stdio_entry_with_warning(self, isolated_home):
+        # Arrange
+        config_path = isolated_home / ".config" / "opencode" / "opencode.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps({
+            "mcp": {
+                "broken": {"type": "local", "command": [], "enabled": True},
+                "good": {
+                    "type": "local",
+                    "command": ["uvx", "forgetful-ai"],
+                    "enabled": True,
+                },
+            }
+        }))
+        adapter = OpenCodeAdapter()
+
+        # Act
+        with pytest.warns(UserWarning, match="broken"):
+            servers = await adapter.list_mcp_servers()
+
+        # Assert
+        assert [s.name for s in servers] == ["good"]
+
+    async def test_skips_malformed_http_entry_with_warning(self, isolated_home):
+        # Arrange
+        config_path = isolated_home / ".config" / "opencode" / "opencode.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps({
+            "mcp": {
+                "no-url": {"type": "remote", "enabled": True},
+                "good": {
+                    "type": "remote",
+                    "url": "https://example.com/mcp",
+                    "enabled": True,
+                },
+            }
+        }))
+        adapter = OpenCodeAdapter()
+
+        # Act
+        with pytest.warns(UserWarning, match="no-url"):
+            servers = await adapter.list_mcp_servers()
+
+        # Assert
+        assert [s.name for s in servers] == ["good"]
+
+    async def test_skips_non_dict_entry_with_warning(self, isolated_home):
+        # Arrange
+        config_path = isolated_home / ".config" / "opencode" / "opencode.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps({
+            "mcp": {
+                "junk": "not-an-object",
+                "good": {
+                    "type": "local",
+                    "command": ["uvx"],
+                    "enabled": True,
+                },
+            }
+        }))
+        adapter = OpenCodeAdapter()
+
+        # Act
+        with pytest.warns(UserWarning, match="junk"):
+            servers = await adapter.list_mcp_servers()
+
+        # Assert
+        assert [s.name for s in servers] == ["good"]

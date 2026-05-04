@@ -251,21 +251,36 @@ class CopilotCLIAdapter:
         result: list[MCPServerSpec] = []
 
         for name, entry in servers.items():
-            entry_type = entry.get("type")
-            if entry_type == "local":
-                result.append(MCPServerSpec(
-                    name=name,
-                    type=MCPServerType.STDIO,
-                    command=entry.get("command"),
-                    args=list(entry.get("args", [])),
-                    env=dict(entry.get("env", {})),
-                ))
-            elif entry_type == "http":
-                result.append(MCPServerSpec(
-                    name=name,
-                    type=MCPServerType.HTTP,
-                    url=entry.get("url"),
-                    headers=dict(entry.get("headers", {})),
-                ))
+            if not isinstance(entry, dict):
+                warnings.warn(
+                    f"Skipping malformed MCP entry '{name}': expected object, got {type(entry).__name__}",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                continue
+
+            try:
+                entry_type = entry.get("type")
+                if entry_type == "local":
+                    result.append(MCPServerSpec(
+                        name=name,
+                        type=MCPServerType.STDIO,
+                        command=entry.get("command"),
+                        args=list(entry.get("args", [])),
+                        env=dict(entry.get("env", {})),
+                    ))
+                elif entry_type == "http":
+                    result.append(MCPServerSpec(
+                        name=name,
+                        type=MCPServerType.HTTP,
+                        url=entry.get("url"),
+                        headers=dict(entry.get("headers", {})),
+                    ))
+            except ValueError as e:
+                warnings.warn(
+                    f"Skipping malformed MCP entry '{name}': {e}",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         return result

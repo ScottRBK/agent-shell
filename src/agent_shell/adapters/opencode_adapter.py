@@ -230,23 +230,38 @@ class OpenCodeAdapter():
         result: list[MCPServerSpec] = []
 
         for name, entry in servers.items():
-            if entry.get("type") == "local":
-                command_array = entry.get("command", [])
-                command = command_array[0] if command_array else None
-                args = list(command_array[1:])
-                result.append(MCPServerSpec(
-                    name=name,
-                    type=MCPServerType.STDIO,
-                    command=command,
-                    args=args,
-                    env=dict(entry.get("environment", {})),
-                ))
-            elif entry.get("type") == "remote":
-                result.append(MCPServerSpec(
-                    name=name,
-                    type=MCPServerType.HTTP,
-                    url=entry.get("url"),
-                    headers=dict(entry.get("headers", {})),
-                ))
+            if not isinstance(entry, dict):
+                warnings.warn(
+                    f"Skipping malformed MCP entry '{name}': expected object, got {type(entry).__name__}",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                continue
+
+            try:
+                if entry.get("type") == "local":
+                    command_array = entry.get("command", [])
+                    command = command_array[0] if command_array else None
+                    args = list(command_array[1:])
+                    result.append(MCPServerSpec(
+                        name=name,
+                        type=MCPServerType.STDIO,
+                        command=command,
+                        args=args,
+                        env=dict(entry.get("environment", {})),
+                    ))
+                elif entry.get("type") == "remote":
+                    result.append(MCPServerSpec(
+                        name=name,
+                        type=MCPServerType.HTTP,
+                        url=entry.get("url"),
+                        headers=dict(entry.get("headers", {})),
+                    ))
+            except ValueError as e:
+                warnings.warn(
+                    f"Skipping malformed MCP entry '{name}': {e}",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         return result
