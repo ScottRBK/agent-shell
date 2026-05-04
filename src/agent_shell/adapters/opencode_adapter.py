@@ -2,9 +2,11 @@ import asyncio
 import json
 import logging
 import os
+import warnings
+from pathlib import Path
 from typing import AsyncIterator
 
-from agent_shell.models.agent import AgentResponse, StreamEvent
+from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, MCPServerType
 from agent_shell.process_cleanup import register_process_group, unregister_process_group
 
 logger = logging.getLogger("agent_shell.opencode_adapter")
@@ -170,3 +172,81 @@ class OpenCodeAdapter():
             except ProcessLookupError:
                 pass
         self._active_processes.clear()
+
+    def _config_path(self) -> Path:
+        return Path(os.path.expanduser("~/.config/opencode/opencode.json"))
+
+    def _read_config(self) -> dict:
+        path = self._config_path()
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text())
+
+    def _write_config(self, config: dict) -> None:
+        path = self._config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(config, indent=2))
+
+    async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None:
+        config = self._read_config()
+        config.setdefault("mcp", {})
+
+        if mcp_server.type == MCPServerType.STDIO:
+            entry = {
+                "type": "local",
+                "command": [mcp_server.command, *mcp_server.args],
+                "environment": dict(mcp_server.env),
+                "enabled": True,
+            }
+        else:
+            entry = {
+                "type": "remote",
+                "url": mcp_server.url,
+                "headers": dict(mcp_server.headers),
+                "enabled": True,
+            }
+
+        config["mcp"][mcp_server.name] = entry
+        self._write_config(config)
+
+    async def remove_mcp_server(self, mcp_server_name: str) -> None:
+        config = self._read_config()
+        servers = config.get("mcp", {})
+        if mcp_server_name not in servers:
+            warnings.warn(
+                f"MCP server '{mcp_server_name}' not found in OpenCode config",
+                UserWarning,
+                stacklevel=2,
+            )
+            return
+
+        del servers[mcp_server_name]
+        config["mcp"] = servers
+        self._write_config(config)
+
+    async def list_mcp_servers(self) -> list[MCPServerSpec]:
+        config = self._read_config()
+        servers = config.get("mcp", {})
+        result: list[MCPServerSpec] = []
+
+        for name, entry in servers.items():
+            if entry.get("type") == "local":
+                command_array = entry.get("command", [])
+                command = command_array[0] if command_array else None
+                args = list(command_array[1:])
+                result.append(MCPServerSpec(
+                    name=name,
+                    type=MCPServerType.STDIO,
+                    command=command,
+                    args=args,
+                    env=dict(entry.get("environment", {})),
+                ))
+            elif entry.get("type") == "remote":
+                result.append(MCPServerSpec(
+                    name=name,
+                    type=MCPServerType.HTTP,
+                    url=entry.get("url"),
+                    headers=dict(entry.get("headers", {})),
+                ))
+
+        return result
