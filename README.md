@@ -95,6 +95,47 @@ follow_up = await shell.execute(
 
 > **Note:** OpenCode's `run` mode auto-approves all tools. The `allowed_tools` and `effort` parameters are configured via `opencode.json`, not CLI flags.
 
+## MCP Servers
+
+Register MCP servers for any supported agent through a unified API. All adapters use user-scope configuration so registrations persist across the agent's `execute`/`stream` calls.
+
+```python
+from agent_shell.shell import AgentShell
+from agent_shell.models.agent import AgentType, MCPServerSpec, MCPServerType
+
+shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+
+# Register a stdio MCP server (e.g. forgetful) before running an eval
+await shell.add_mcp_server(MCPServerSpec(
+    name="forgetful",
+    type=MCPServerType.STDIO,
+    command="uvx",
+    args=["forgetful-ai"],
+    env={"FORGETFUL_API_KEY": "..."},
+))
+
+response = await shell.execute(
+    cwd="/path/to/project",
+    prompt="Recall any prior decisions about the auth module",
+)
+
+# Optional cleanup
+await shell.remove_mcp_server("forgetful")
+```
+
+For HTTP transport, pass `url` and `headers` instead of `command`/`args`/`env`:
+
+```python
+await shell.add_mcp_server(MCPServerSpec(
+    name="remote",
+    type=MCPServerType.HTTP,
+    url="https://example.com/mcp",
+    headers={"Authorization": "Bearer ..."},
+))
+```
+
+`add_mcp_server` overwrites an existing server with the same name. `remove_mcp_server` warns rather than raises when the named server is not found. `list_mcp_servers()` works for OpenCode and Copilot CLI; for Claude Code it currently raises `NotImplementedError`.
+
 ## Logging
 
 Agent Shell uses Python's standard `logging` module. Configure the `agent_shell` logger to capture tool calls, session IDs, costs, and errors:

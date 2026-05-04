@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 from typing import AsyncIterator
 
-from agent_shell.models.agent import AgentType, AgentResponse, StreamEvent
+from agent_shell.models.agent import AgentType, AgentResponse, StreamEvent, MCPServerSpec
 from agent_shell.adapters.agent_adapter_protocol import AgentAdapter
 from agent_shell.adapters.claude_code_adapter import ClaudeCodeAdapter
 from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
@@ -88,3 +88,11 @@ class AgentShell():
             await self._adapter.cancel()
             raise
 
+    async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None:
+        await self._adapter.add_mcp_server(mcp_server)
+
+    async def remove_mcp_server(self, mcp_server_name: str) -> None:
+        await self._adapter.remove_mcp_server(mcp_server_name)
+
+    async def list_mcp_servers(self) -> list[MCPServerSpec]:
+        return await self._adapter.list_mcp_servers()

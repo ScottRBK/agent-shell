@@ -2,9 +2,11 @@ import asyncio
 import json
 import logging
 import os
+import warnings
+from pathlib import Path
 from typing import AsyncIterator
 
-from agent_shell.models.agent import AgentResponse, StreamEvent
+from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, MCPServerType
 from agent_shell.process_cleanup import register_process_group, unregister_process_group
 
 logger = logging.getLogger("agent_shell.copilot_cli_adapter")
@@ -190,3 +192,95 @@ class CopilotCLIAdapter:
             except ProcessLookupError:
                 pass
         self._active_processes.clear()
+
+    def _config_path(self) -> Path:
+        return Path(os.path.expanduser("~/.copilot/mcp-config.json"))
+
+    def _read_config(self) -> dict:
+        path = self._config_path()
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text())
+
+    def _write_config(self, config: dict) -> None:
+        path = self._config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(config, indent=2))
+
+    async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None:
+        config = self._read_config()
+        config.setdefault("mcpServers", {})
+
+        if mcp_server.type == MCPServerType.STDIO:
+            entry = {
+                "type": "local",
+                "command": mcp_server.command,
+                "args": list(mcp_server.args),
+                "env": dict(mcp_server.env),
+                "tools": ["*"],
+            }
+        else:
+            entry = {
+                "type": "http",
+                "url": mcp_server.url,
+                "headers": dict(mcp_server.headers),
+                "tools": ["*"],
+            }
+
+        config["mcpServers"][mcp_server.name] = entry
+        self._write_config(config)
+
+    async def remove_mcp_server(self, mcp_server_name: str) -> None:
+        config = self._read_config()
+        servers = config.get("mcpServers", {})
+        if mcp_server_name not in servers:
+            warnings.warn(
+                f"MCP server '{mcp_server_name}' not found in Copilot CLI config",
+                UserWarning,
+                stacklevel=2,
+            )
+            return
+
+        del servers[mcp_server_name]
+        config["mcpServers"] = servers
+        self._write_config(config)
+
+    async def list_mcp_servers(self) -> list[MCPServerSpec]:
+        config = self._read_config()
+        servers = config.get("mcpServers", {})
+        result: list[MCPServerSpec] = []
+
+        for name, entry in servers.items():
+            if not isinstance(entry, dict):
+                warnings.warn(
+                    f"Skipping malformed MCP entry '{name}': expected object, got {type(entry).__name__}",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                continue
+
+            try:
+                entry_type = entry.get("type")
+                if entry_type == "local":
+                    result.append(MCPServerSpec(
+                        name=name,
+                        type=MCPServerType.STDIO,
+                        command=entry.get("command"),
+                        args=list(entry.get("args", [])),
+                        env=dict(entry.get("env", {})),
+                    ))
+                elif entry_type == "http":
+                    result.append(MCPServerSpec(
+                        name=name,
+                        type=MCPServerType.HTTP,
+                        url=entry.get("url"),
+                        headers=dict(entry.get("headers", {})),
+                    ))
+            except ValueError as e:
+                warnings.warn(
+                    f"Skipping malformed MCP entry '{name}': {e}",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+        return result

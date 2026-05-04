@@ -10,6 +10,9 @@ classDiagram
         -AgentAdapter _adapter
         +execute(cwd, prompt, ...) AgentResponse
         +stream(cwd, prompt, ...) AsyncIterator~StreamEvent~
+        +add_mcp_server(spec) None
+        +remove_mcp_server(name) None
+        +list_mcp_servers() list~MCPServerSpec~
     }
 
     class AgentAdapter {
@@ -17,6 +20,9 @@ classDiagram
         +execute(cwd, prompt, ...) AgentResponse
         +stream(cwd, prompt, ...) AsyncIterator~StreamEvent~
         +cancel() None
+        +add_mcp_server(spec) None
+        +remove_mcp_server(name) None
+        +list_mcp_servers() list~MCPServerSpec~
     }
 
     class ClaudeCodeAdapter {
@@ -24,7 +30,26 @@ classDiagram
         +execute(cwd, prompt, ...) AgentResponse
         +stream(cwd, prompt, ...) AsyncIterator~StreamEvent~
         +cancel() None
+        +add_mcp_server(spec) None
+        +remove_mcp_server(name) None
+        +list_mcp_servers() NotImplementedError
         -_parse_event(event, include_thinking) list~StreamEvent~
+    }
+
+    class MCPServerSpec {
+        +str name
+        +MCPServerType type
+        +str command
+        +list args
+        +dict env
+        +str url
+        +dict headers
+    }
+
+    class MCPServerType {
+        <<StrEnum>>
+        STDIO
+        HTTP
     }
 
     class AgentResponse {
@@ -53,6 +78,8 @@ classDiagram
     ClaudeCodeAdapter ..|> AgentAdapter : satisfies
     AgentShell ..> AgentResponse : returns
     AgentShell ..> StreamEvent : yields
+    AgentShell ..> MCPServerSpec : accepts/returns
+    MCPServerSpec --> MCPServerType : typed by
     ClaudeCodeAdapter ..> StreamEvent : parses NDJSON into
 ```
 
@@ -61,10 +88,39 @@ The adapter pattern uses Python's `Protocol` (structural typing) rather than ABC
 ## Supported Agents
 
 - [x] Claude Code
-- [ ] OpenCode
+- [x] OpenCode
+- [x] Copilot CLI
 - [ ] Gemini CLI
-- [ ] Copilot CLI
 - [ ] Codex
+
+## MCP Server Configuration
+
+`AgentShell` exposes a unified API for registering MCP servers across all supported agents:
+
+```python
+from agent_shell import AgentShell
+from agent_shell.models.agent import AgentType, MCPServerSpec, MCPServerType
+
+shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+
+await shell.add_mcp_server(MCPServerSpec(
+    name="forgetful",
+    type=MCPServerType.STDIO,
+    command="uvx",
+    args=["forgetful-ai"],
+    env={"FORGETFUL_API_KEY": "..."},
+))
+```
+
+All adapters write to user-scope configuration:
+
+| Agent | Mechanism | Location |
+|-------|-----------|----------|
+| Claude Code | `claude mcp add --scope user` subprocess | `~/.claude.json` (managed by CLI) |
+| OpenCode | direct JSON file write | `~/.config/opencode/opencode.json` |
+| Copilot CLI | direct JSON file write | `~/.copilot/mcp-config.json` |
+
+Adds are idempotent (overwrite existing entries with the same name). Removes warn rather than raise when the named server is not found. `list_mcp_servers()` is not yet implemented for Claude Code.
 
 ## Test Philosophy
 
