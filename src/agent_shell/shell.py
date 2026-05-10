@@ -7,6 +7,7 @@ from agent_shell.adapters.agent_adapter_protocol import AgentAdapter
 from agent_shell.adapters.claude_code_adapter import ClaudeCodeAdapter
 from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
 from agent_shell.adapters.copilot_cli_adapter import CopilotCLIAdapter
+from agent_shell.adapters.codex_adapter import CodexAdapter
 
 
 class AgentShell():
@@ -18,6 +19,7 @@ class AgentShell():
                 AgentType.CLAUDE_CODE: ClaudeCodeAdapter,
                 AgentType.OPENCODE: OpenCodeAdapter,
                 AgentType.COPILOT_CLI: CopilotCLIAdapter,
+                AgentType.CODEX: CodexAdapter,
         }
         
         adapter_cls = adapters.get(agent_type)
