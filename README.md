@@ -154,7 +154,6 @@ Set to `DEBUG` for raw JSON events and full command arguments.
 - [x] Claude Code
 - [x] OpenCode
 - [x] Copilot CLI
-- [ ] Gemini CLI
 - [x] Codex
 
 
