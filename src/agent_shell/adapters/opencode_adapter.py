@@ -59,6 +59,12 @@ class OpenCodeAdapter():
     ) -> AsyncIterator[StreamEvent]:
         cmd = ["opencode", "run", "--format", "json"]
 
+        if auto_approve:
+            # opencode run auto-REJECTS permission prompts in non-interactive
+            # mode; without this flag a single ask (e.g. reading a file outside
+            # the project directory) silently aborts the agent loop.
+            cmd.append("--dangerously-skip-permissions")
+
         if model:
             cmd.extend(["-m", model])
 
@@ -70,12 +76,18 @@ class OpenCodeAdapter():
         logger.debug("Command: %s", cmd)
         logger.info("Process started (cwd=%s)", os.path.abspath(cwd))
 
+        # opencode resolves its project directory (and with it the permission
+        # boundary) from $PWD when set, so a stale inherited PWD — the
+        # launcher's directory rather than `cwd` — misplaces the project root.
+        env = {**os.environ, "PWD": os.path.abspath(cwd)}
+
         process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=os.path.abspath(cwd),
+                env=env,
                 preexec_fn=os.setsid,
         )
 
