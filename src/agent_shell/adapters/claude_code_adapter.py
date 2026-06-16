@@ -7,8 +7,19 @@ from typing import AsyncIterator
 
 from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, MCPServerType
 from agent_shell.process_cleanup import register_process_group, unregister_process_group
+from agent_shell.adapters.tool_denial import resolve_disallowed_tools
 
 logger = logging.getLogger("agent_shell.claude_code_adapter")
+
+# Canonical deny-name -> Claude Code native tool names. `edit` fans out to the full
+# file-modification family; everything else is one-to-one.
+_DISALLOWED_TOOL_MAP = {
+    "bash": ["Bash"],
+    "edit": ["Edit", "Write", "NotebookEdit"],
+    "read": ["Read"],
+    "web_search": ["WebSearch"],
+    "web_fetch": ["WebFetch"],
+}
 
 class ClaudeCodeAdapter():
     def __init__(self):
@@ -24,12 +35,14 @@ class ClaudeCodeAdapter():
             include_thinking: bool = False,
             auto_approve: bool = True,
             session_id: str | None = None,
+            disallowed_tools: list[str] | None = None,
     ) -> AgentResponse:
         chunks: list[StreamEvent] = []
         async for event in self.stream(
             cwd=cwd,
             prompt=prompt,
             allowed_tools=allowed_tools,
+            disallowed_tools=disallowed_tools,
             model=model,
             effort=effort,
             include_thinking=include_thinking,
@@ -54,6 +67,7 @@ class ClaudeCodeAdapter():
             include_thinking: bool = False,
             auto_approve: bool = True,
             session_id: str | None = None,
+            disallowed_tools: list[str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         cmd = [
             "claude", "-p", prompt,
@@ -66,6 +80,18 @@ class ClaudeCodeAdapter():
 
         if allowed_tools:
             cmd.extend(["--allowed-tools", ",".join(allowed_tools)])
+
+        # Deny-list. `--disallowed-tools` takes precedence over both --allowed-tools
+        # and --dangerously-skip-permissions, so it is safe alongside auto_approve.
+        native, unsupported = resolve_disallowed_tools(disallowed_tools, _DISALLOWED_TOOL_MAP)
+        if unsupported:
+            warnings.warn(
+                f"Claude Code cannot deny {unsupported}; ignoring",
+                UserWarning,
+                stacklevel=2,
+            )
+        if native:
+            cmd.extend(["--disallowed-tools", ",".join(native)])
 
         if model:
             cmd.extend(["--model", model])

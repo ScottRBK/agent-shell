@@ -1,7 +1,7 @@
 # Agent CLI Parameter Comparison
 
 Comparison of headless/non-interactive configuration across supported CLI coding agents.
-Last updated: 2026-03-29
+Last updated: 2026-06-16
 
 ## Summary Table
 
@@ -11,6 +11,7 @@ Last updated: 2026-03-29
 | **Model** | `--model` | `-m` | `--model` / `-m` | `--model` | `--model` / `-m` |
 | **Effort/Thinking** | `--effort` (low/med/high/max) | `thinkingConfig` in settings.json | `-c model_reasoning_effort=` | `--effort` / `--reasoning-effort` | `reasoningEffort` in config |
 | **Allowed tools** | `--allowed-tools` | `tools` in settings.json | No direct flag | `--allow-tool`, `--available-tools` | `tools` in config |
+| **Disallowed tools** | `--disallowed-tools` | `tools.exclude` in settings.json | `web_search` config only | `--deny-tool` | `OPENCODE_PERMISSION` env / `permission` config |
 | **Stream output** | `--output-format stream-json` | `-o stream-json` | `--json` (NDJSON) | `--output-format=json` (JSONL) | `--format json` |
 | **Working dir** | cwd + `--add-dir` | cwd + `--worktree` | `--cd` / `-C` | cwd (no flag) | cwd (no flag) |
 | **System prompt** | `--system-prompt` / `--append-system-prompt` | `GEMINI_SYSTEM_MD` env var | No flag (files only) | No flag (files only) | `instructions` in config |
@@ -114,8 +115,29 @@ Based on this comparison, the following parameters map across all agents:
 
 ### Widely supported (most agents, mechanism varies)
 - `allowed_tools` - tool filtering (CLI flags for Claude/Copilot, config for others)
+- `disallowed_tools` - tool deny-list (see below)
 - `effort` - reasoning effort level (direct flag or config-based)
 - `include_thinking` - whether to surface reasoning (adapter controls how)
+
+#### `disallowed_tools` — canonical deny vocabulary
+
+Callers pass canonical names so they need not know each CLI's tool vocabulary. The
+canonical set is `{bash, edit, read, web_search, web_fetch}` (write/edit/patch collapse
+into one `edit`). Each adapter owns a `canonical -> [native]` map (`tool_denial.py`),
+fanning out where a harness splits the concept. Names outside the canonical set pass
+through **verbatim** (e.g. `mcp__server__tool`, or a harness-specific name like `Write`).
+
+| Adapter | Mechanism | Notes |
+|---|---|---|
+| Claude Code | `--disallowed-tools` (comma-joined) | `edit` → `Edit,Write,NotebookEdit`; precedence over skip-permissions |
+| Copilot CLI | repeated `--deny-tool` | only `bash`→`shell` and `edit`→`write` are canonically mapped (the CLI's confirmed permission names); `read`/`web_search`/`web_fetch` **warn** — Copilot has no web tools and silently ignores unknown deny names. Deny rules take precedence over `--allow-all-tools` |
+| OpenCode | `OPENCODE_PERMISSION` env var, process-scoped | merges over any inherited value (deny wins), fails closed on bad JSON; hard block before approval flow |
+| Codex | `-c web_search="disabled"` only | no name-based deny; web_search key verified on codex-cli 0.133.0 but version-fragile (upstream `web_search_mode`), guarded by an e2e test; every other canonical/verbatim name warns and is ignored |
+
+When an adapter cannot honor a requested canonical deny it emits a `UserWarning` listing
+the ignored names rather than silently dropping the deny (fail-loud). A caller who knows a
+backend's exact native tool name can always pass it **verbatim** (it bypasses the canonical
+map), e.g. `disallowed_tools=["view"]` on Copilot.
 
 ### Partially supported (some agents only)
 - `system_prompt` - only Claude Code has a direct flag, others use files/env vars

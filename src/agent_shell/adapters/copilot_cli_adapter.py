@@ -8,8 +8,23 @@ from typing import AsyncIterator
 
 from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, MCPServerType
 from agent_shell.process_cleanup import register_process_group, unregister_process_group
+from agent_shell.adapters.tool_denial import resolve_disallowed_tools
 
 logger = logging.getLogger("agent_shell.copilot_cli_adapter")
+
+# Canonical deny-name -> Copilot CLI `--deny-tool` permission names.
+# Only `shell` and `write` are confirmed permission names for the CLI's tool flags
+# (`copilot --help`: `--allow-tool='shell(git:*)'`, `--allow-tool='write'`). Copilot CLI
+# has no `web_search`/`web_fetch` tools (its web tool is `fetch`), and the SDK tool
+# vocabulary (`bash`/`edit`/`view`) differs from the CLI flag vocabulary — so guessing
+# native names for read/web access risks a SILENT no-op deny, because Copilot ignores
+# unrecognized `--deny-tool` names. `read`/`web_search`/`web_fetch` are therefore left
+# unmapped so the adapter warns loudly (fail-loud) rather than pretending to deny; a caller
+# who knows their build's exact tool name can still pass it verbatim (e.g. ["view"]).
+_DISALLOWED_TOOL_MAP = {
+    "bash": ["shell"],
+    "edit": ["write"],
+}
 
 
 class CopilotCLIAdapter:
@@ -26,12 +41,14 @@ class CopilotCLIAdapter:
             include_thinking: bool = False,
             auto_approve: bool = True,
             session_id: str | None = None,
+            disallowed_tools: list[str] | None = None,
     ) -> AgentResponse:
         chunks: list[StreamEvent] = []
         async for event in self.stream(
             cwd=cwd,
             prompt=prompt,
             allowed_tools=allowed_tools,
+            disallowed_tools=disallowed_tools,
             model=model,
             effort=effort,
             include_thinking=include_thinking,
@@ -56,6 +73,7 @@ class CopilotCLIAdapter:
             include_thinking: bool = False,
             auto_approve: bool = True,
             session_id: str | None = None,
+            disallowed_tools: list[str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         cmd = [
             "copilot", "-p", prompt,
@@ -69,6 +87,19 @@ class CopilotCLIAdapter:
         if allowed_tools:
             for tool in allowed_tools:
                 cmd.extend(["--allow-tool", tool])
+
+        # Deny-list. Copilot docs: "Deny rules always take precedence", so --deny-tool
+        # holds even alongside --allow-all-tools. MCP tools (Server(tool) syntax) pass
+        # through verbatim as unknown names.
+        native, unsupported = resolve_disallowed_tools(disallowed_tools, _DISALLOWED_TOOL_MAP)
+        if unsupported:
+            warnings.warn(
+                f"Copilot CLI cannot deny {unsupported}; ignoring",
+                UserWarning,
+                stacklevel=2,
+            )
+        for tool in native:
+            cmd.extend(["--deny-tool", tool])
 
         if model:
             cmd.extend(["--model", model])

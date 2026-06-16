@@ -398,3 +398,27 @@ class TestSessionIntegration:
         # Assert
         cmd_args = mock_exec.call_args[0]
         assert "resume" not in cmd_args
+
+
+class TestDisallowedToolsIntegration:
+    async def test_web_search_deny_reaches_command_through_shell(self):
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.CODEX)
+        ndjson = [
+            THREAD_STARTED_EVENT,
+            TURN_STARTED_EVENT,
+            AGENT_MESSAGE_COMPLETED_EVENT,
+            TURN_COMPLETED_EVENT,
+        ]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            async for _ in shell.stream(
+                cwd="/tmp", prompt="test", disallowed_tools=["web_search"]
+            ):
+                pass
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        assert 'web_search="disabled"' in cmd_args

@@ -67,6 +67,33 @@ async for event in shell.stream(
         print(f"[{event.type}] {event.content}")
 ```
 
+### Restricting tools (`disallowed_tools`)
+
+Pass a deny-list of tools that the agent must not use. Use the canonical vocabulary
+`{bash, edit, read, web_search, web_fetch}` and Agent Shell translates it to each CLI's
+own tool names — callers don't need to know the per-harness vocabulary:
+
+```python
+shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+
+response = await shell.execute(
+    cwd="/path/to/project",
+    prompt="Audit this code but don't run anything or touch the network",
+    disallowed_tools=["bash", "web_search", "web_fetch"],
+)
+```
+
+- `edit` covers write/edit/notebook-edit (it fans out on harnesses that split them).
+- Any name outside the canonical set passes through **verbatim** (e.g. an MCP tool
+  `mcp__server__tool`, or a harness-specific name like `Write`, or Copilot's `view`).
+- Deny takes precedence over auto-approve on every backend that supports it.
+- Where a backend cannot enforce a deny, the adapter emits a `UserWarning` listing the
+  ignored tools rather than failing silently. Coverage varies: Claude and OpenCode enforce
+  all five canonical names; Copilot enforces only `bash`/`edit` canonically (use a verbatim
+  name for its other tools); Codex can only deny `web_search`.
+- Denying `edit` or `read` is **best-effort**: a model can still modify or read files through
+  the shell, so also deny `bash` when you need a hard file boundary.
+
 ### OpenCode
 
 ```python

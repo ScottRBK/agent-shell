@@ -12,6 +12,7 @@ class AgentAdapter(Protocol):
             include_thinking: bool = False,
             auto_approve: bool = True,
             session_id: str | None = None,
+            disallowed_tools: list[str] | None = None,
     ) -> AgentResponse:
         ...
 
@@ -25,6 +26,7 @@ class AgentAdapter(Protocol):
             include_thinking: bool = False,
             auto_approve: bool = True,
             session_id: str | None = None,
+            disallowed_tools: list[str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         ...
 

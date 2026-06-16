@@ -97,6 +97,89 @@ class TestStream:
         cmd_args = mock_exec.call_args[0]
         assert "--effort" not in cmd_args
 
+    async def test_disallowed_bash_maps_to_native_flag(self):
+        # Arrange
+        adapter = ClaudeCodeAdapter()
+        ndjson = [TEXT_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            async for _ in adapter.stream(cwd="/tmp", prompt="test", disallowed_tools=["bash"]):
+                pass
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        assert "--disallowed-tools" in cmd_args
+        assert cmd_args[cmd_args.index("--disallowed-tools") + 1] == "Bash"
+
+    async def test_disallowed_edit_fans_out_comma_joined(self):
+        # Arrange
+        adapter = ClaudeCodeAdapter()
+        ndjson = [TEXT_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            async for _ in adapter.stream(cwd="/tmp", prompt="test", disallowed_tools=["edit"]):
+                pass
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        value = cmd_args[cmd_args.index("--disallowed-tools") + 1]
+        assert value == "Edit,Write,NotebookEdit"
+
+    async def test_disallowed_unknown_name_passes_through_verbatim(self):
+        # Arrange
+        adapter = ClaudeCodeAdapter()
+        ndjson = [TEXT_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            async for _ in adapter.stream(
+                cwd="/tmp", prompt="test", disallowed_tools=["mcp__foo__bar"]
+            ):
+                pass
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        value = cmd_args[cmd_args.index("--disallowed-tools") + 1]
+        assert value == "mcp__foo__bar"
+
+    async def test_omits_disallowed_tools_flag_when_none(self):
+        # Arrange
+        adapter = ClaudeCodeAdapter()
+        ndjson = [TEXT_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            async for _ in adapter.stream(cwd="/tmp", prompt="test"):
+                pass
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        assert "--disallowed-tools" not in cmd_args
+
+    async def test_disallowed_tools_coexists_with_skip_permissions(self):
+        # Arrange
+        adapter = ClaudeCodeAdapter()
+        ndjson = [TEXT_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            async for _ in adapter.stream(
+                cwd="/tmp", prompt="test", auto_approve=True, disallowed_tools=["bash"]
+            ):
+                pass
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        assert "--dangerously-skip-permissions" in cmd_args
+        assert "--disallowed-tools" in cmd_args
+
     async def test_skips_malformed_json_lines(self):
         # Arrange
         adapter = ClaudeCodeAdapter()
@@ -122,3 +205,20 @@ class TestStream:
         assert len(events) == 2
         assert events[0].type == "text"
         assert events[1].type == "result"
+
+
+class TestExecuteForwardsDisallowedTools:
+    async def test_execute_forwards_disallowed_tools_to_command(self):
+        # Arrange — execute() must thread disallowed_tools into the same stream() path.
+        adapter = ClaudeCodeAdapter()
+        ndjson = [TEXT_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            await adapter.execute(cwd="/tmp", prompt="test", disallowed_tools=["bash"])
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        assert "--disallowed-tools" in cmd_args
+        assert cmd_args[cmd_args.index("--disallowed-tools") + 1] == "Bash"

@@ -78,3 +78,30 @@ class TestSessionResumeE2E:
         # Assert
         assert isinstance(second, AgentResponse)
         assert "banana" in second.response.lower()
+
+
+class TestDisallowedToolsE2E:
+    async def test_web_search_deny_config_is_accepted_by_codex(self):
+        # Regression guard for the one Codex deny mechanism: `-c web_search="disabled"`.
+        # If a future Codex renames/removes this top-level config key, the run errors with
+        # "unknown configuration field" and the deny silently becomes a no-op. Unit tests
+        # only assert agent_shell emits the string; only this real run proves Codex accepts
+        # it. Arrange / Act
+        shell = AgentShell(agent_type=AgentType.CODEX)
+        events: list[StreamEvent] = []
+        async for event in shell.stream(
+            cwd="/tmp",
+            prompt="Reply with exactly the word PONG and nothing else.",
+            model=MODEL,
+            disallowed_tools=["web_search"],
+        ):
+            events.append(event)
+
+        # Assert — codex accepted the config (no error) and completed the turn.
+        error_events = [e for e in events if e.type == "error"]
+        result_events = [e for e in events if e.type == "result"]
+        assert not error_events, (
+            "codex rejected the web_search deny config "
+            f"(possible upstream key rename): {[e.content for e in error_events]}"
+        )
+        assert len(result_events) == 1

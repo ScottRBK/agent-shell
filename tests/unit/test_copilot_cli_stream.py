@@ -1,6 +1,9 @@
 import asyncio
 import json
+import warnings
 from unittest.mock import AsyncMock, patch, MagicMock
+
+import pytest
 
 from agent_shell.adapters.copilot_cli_adapter import CopilotCLIAdapter
 from agent_shell.models.agent import StreamEvent
@@ -223,6 +226,148 @@ class TestStream:
         cmd_args = mock_exec.call_args[0]
         assert "--resume" not in cmd_args
 
+    async def test_disallowed_bash_maps_to_deny_tool_shell(self):
+        # Arrange
+        adapter = CopilotCLIAdapter()
+        ndjson = [MESSAGE_DELTA_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            async for _ in adapter.stream(cwd="/tmp", prompt="test", disallowed_tools=["bash"]):
+                pass
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        deny_indices = [i for i, x in enumerate(cmd_args) if x == "--deny-tool"]
+        assert len(deny_indices) == 1
+        assert cmd_args[deny_indices[0] + 1] == "shell"
+
+    async def test_disallowed_edit_maps_to_single_write_deny(self):
+        # Arrange
+        adapter = CopilotCLIAdapter()
+        ndjson = [MESSAGE_DELTA_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            async for _ in adapter.stream(cwd="/tmp", prompt="test", disallowed_tools=["edit"]):
+                pass
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        deny_indices = [i for i, x in enumerate(cmd_args) if x == "--deny-tool"]
+        assert len(deny_indices) == 1
+        assert cmd_args[deny_indices[0] + 1] == "write"
+        assert "edit" not in cmd_args
+
+    async def test_unsupported_canonical_warns_and_emits_no_deny_flag(self):
+        # Arrange — Copilot has no web_search/web_fetch tools, and `read`'s CLI deny name
+        # is unconfirmed, so these canonical names must warn rather than silently no-op.
+        adapter = CopilotCLIAdapter()
+        ndjson = [MESSAGE_DELTA_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act / Assert
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            with pytest.warns(UserWarning, match="web_search"):
+                async for _ in adapter.stream(
+                    cwd="/tmp", prompt="test", disallowed_tools=["read", "web_search", "web_fetch"]
+                ):
+                    pass
+
+        cmd_args = mock_exec.call_args[0]
+        assert "--deny-tool" not in cmd_args
+
+    async def test_supported_and_unsupported_mix_denies_known_and_warns_rest(self):
+        # Arrange
+        adapter = CopilotCLIAdapter()
+        ndjson = [MESSAGE_DELTA_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act / Assert — bash denied, web_fetch warned.
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            with pytest.warns(UserWarning, match="web_fetch"):
+                async for _ in adapter.stream(
+                    cwd="/tmp", prompt="test", disallowed_tools=["bash", "web_fetch"]
+                ):
+                    pass
+
+        cmd_args = mock_exec.call_args[0]
+        deny_values = [cmd_args[i + 1] for i, x in enumerate(cmd_args) if x == "--deny-tool"]
+        assert deny_values == ["shell"]
+
+    async def test_disallowed_multiple_supported_emit_repeated_deny_flags(self):
+        # Arrange
+        adapter = CopilotCLIAdapter()
+        ndjson = [MESSAGE_DELTA_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            async for _ in adapter.stream(
+                cwd="/tmp", prompt="test", disallowed_tools=["bash", "edit"]
+            ):
+                pass
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        deny_values = [cmd_args[i + 1] for i, x in enumerate(cmd_args) if x == "--deny-tool"]
+        assert deny_values == ["shell", "write"]
+
+    async def test_verbatim_passthrough_name_reaches_deny_tool(self):
+        # Arrange — a non-canonical name (e.g. Copilot's actual `view` tool, or an MCP
+        # `Server(tool)` name) passes through verbatim as the escape hatch.
+        adapter = CopilotCLIAdapter()
+        ndjson = [MESSAGE_DELTA_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            async for _ in adapter.stream(
+                cwd="/tmp", prompt="test", disallowed_tools=["view"]
+            ):
+                pass
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        deny_indices = [i for i, x in enumerate(cmd_args) if x == "--deny-tool"]
+        assert len(deny_indices) == 1
+        assert cmd_args[deny_indices[0] + 1] == "view"
+
+    async def test_omits_deny_tool_when_none(self):
+        # Arrange
+        adapter = CopilotCLIAdapter()
+        ndjson = [MESSAGE_DELTA_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            async for _ in adapter.stream(cwd="/tmp", prompt="test"):
+                pass
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        assert "--deny-tool" not in cmd_args
+
+    async def test_disallowed_coexists_with_allow_all_tools(self):
+        # Arrange
+        adapter = CopilotCLIAdapter()
+        ndjson = [MESSAGE_DELTA_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            async for _ in adapter.stream(
+                cwd="/tmp", prompt="test", auto_approve=True, disallowed_tools=["bash"]
+            ):
+                pass
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        assert "--allow-all-tools" in cmd_args
+        assert "--deny-tool" in cmd_args
+
     async def test_skips_malformed_json_lines(self):
         # Arrange
         adapter = CopilotCLIAdapter()
@@ -268,3 +413,20 @@ class TestStream:
         assert "--output-format" in cmd_args
         assert cmd_args[cmd_args.index("--output-format") + 1] == "json"
         assert "--silent" in cmd_args
+
+
+class TestExecuteForwardsDisallowedTools:
+    async def test_execute_forwards_disallowed_tools_to_command(self):
+        # Arrange
+        adapter = CopilotCLIAdapter()
+        ndjson = [MESSAGE_DELTA_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            await adapter.execute(cwd="/tmp", prompt="test", disallowed_tools=["bash"])
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        assert "--deny-tool" in cmd_args
+        assert cmd_args[cmd_args.index("--deny-tool") + 1] == "shell"

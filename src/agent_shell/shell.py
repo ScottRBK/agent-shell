@@ -39,6 +39,7 @@ class AgentShell():
             include_thinking: bool = False,
             auto_approve: bool = True,
             session_id: str | None = None,
+            disallowed_tools: list[str] | None = None,
     ) -> AgentResponse:
 
         if not Path(cwd).is_dir():
@@ -49,6 +50,7 @@ class AgentShell():
                     cwd=cwd,
                     prompt=prompt,
                     allowed_tools=allowed_tools,
+                    disallowed_tools=disallowed_tools,
                     model=model,
                     effort=effort,
                     include_thinking=include_thinking,
@@ -69,6 +71,7 @@ class AgentShell():
             include_thinking: bool = False,
             auto_approve: bool = True,
             session_id: str | None = None,
+            disallowed_tools: list[str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
 
         if not Path(cwd).is_dir():
@@ -79,6 +82,7 @@ class AgentShell():
                     cwd=cwd,
                     prompt=prompt,
                     allowed_tools=allowed_tools,
+                    disallowed_tools=disallowed_tools,
                     model=model,
                     effort=effort,
                     include_thinking=include_thinking,

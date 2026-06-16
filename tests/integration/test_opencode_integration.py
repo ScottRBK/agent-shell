@@ -1,4 +1,5 @@
 import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from agent_shell.shell import AgentShell
@@ -219,3 +220,23 @@ class TestSessionIntegration:
         # Assert
         assert isinstance(response, AgentResponse)
         assert response.session_id == "test-session"
+
+
+class TestDisallowedToolsIntegration:
+    async def test_disallowed_tools_reach_permission_env_through_shell(self):
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.OPENCODE)
+        ndjson = [STEP_START_EVENT, TEXT_EVENT, STEP_FINISH_STOP_EVENT]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OPENCODE_PERMISSION", None)
+            with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+                async for _ in shell.stream(cwd="/tmp", prompt="test", disallowed_tools=["bash"]):
+                    pass
+
+        # Assert
+        env = mock_exec.call_args.kwargs["env"]
+        perm = json.loads(env["OPENCODE_PERMISSION"])
+        assert perm == {"bash": "deny"}

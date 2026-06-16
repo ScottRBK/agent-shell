@@ -27,12 +27,14 @@ class CodexAdapter:
             include_thinking: bool = False,
             auto_approve: bool = True,
             session_id: str | None = None,
+            disallowed_tools: list[str] | None = None,
     ) -> AgentResponse:
         chunks: list[StreamEvent] = []
         async for event in self.stream(
             cwd=cwd,
             prompt=prompt,
             allowed_tools=allowed_tools,
+            disallowed_tools=disallowed_tools,
             model=model,
             effort=effort,
             include_thinking=include_thinking,
@@ -57,6 +59,7 @@ class CodexAdapter:
             include_thinking: bool = False,
             auto_approve: bool = True,
             session_id: str | None = None,
+            disallowed_tools: list[str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         if include_thinking and not self._warned_include_thinking:
             warnings.warn(
@@ -74,12 +77,42 @@ class CodexAdapter:
             )
             self._warned_allowed_tools = True
 
+        # Codex has no name-based deny; it can only disable web search via a config
+        # override. Everything else is warn-and-ignore.
+        deny_web_search = bool(disallowed_tools) and "web_search" in disallowed_tools
+        if disallowed_tools:
+            unsupported = sorted(set(disallowed_tools) - {"web_search"})
+            if unsupported:
+                # Warn EVERY call (not warn-once like include_thinking/allowed_tools above):
+                # a silently dropped deny is a security hole, and a reused adapter instance
+                # may request a different unenforceable deny on a later call.
+                warnings.warn(
+                    f"Codex can only deny web_search; ignoring {unsupported}",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+        if deny_web_search and effort == "minimal":
+            # Codex IGNORES web_search="disabled" under model_reasoning_effort="minimal"
+            # (openai/codex#5002), so the only Codex-enforceable deny silently fails OPEN at this
+            # effort. Warn EVERY call (same security rationale as the unsupported-deny warning
+            # above) rather than emit a no-op deny silently — a caller must never believe the
+            # network is blocked when it is not. The flag is still passed (harmless at other
+            # efforts on a reused instance); the warning carries the truth.
+            warnings.warn(
+                'Codex ignores web_search="disabled" under model_reasoning_effort="minimal" '
+                "(openai/codex#5002); the web_search deny will NOT be enforced this call",
+                UserWarning,
+                stacklevel=2,
+            )
+
         cmd = self._build_command(
             prompt=prompt,
             model=model,
             effort=effort,
             auto_approve=auto_approve,
             session_id=session_id,
+            deny_web_search=deny_web_search,
         )
 
         logger.debug("Command: %s", cmd)
@@ -141,13 +174,24 @@ class CodexAdapter:
             effort: str | None,
             auto_approve: bool,
             session_id: str | None,
+            deny_web_search: bool = False,
     ) -> list[str]:
+        # `web_search` is a TOML string config (disabled/cached/live), so the value must be
+        # quoted like model_reasoning_effort. Verified accepted AND enforced on codex-cli
+        # 0.133.0 (incl. under --dangerously-bypass-approvals-and-sandbox). This single key is
+        # the entire Codex deny capability, so it is load-bearing and version-fragile: upstream
+        # is moving toward `web_search_mode`, and a future Codex could rename/reject the
+        # top-level key and silently turn this deny into a no-op. The e2e guard in
+        # tests/e2e/test_codex_e2e.py is what catches that. Separately, Codex ignores
+        # web_search="disabled" under model_reasoning_effort="minimal" (openai/codex#5002).
         if session_id:
             cmd = ["codex", "exec", "resume", "--json", "--skip-git-repo-check"]
             if model:
                 cmd.extend(["--model", model])
             if effort:
                 cmd.extend(["-c", f'model_reasoning_effort="{effort}"'])
+            if deny_web_search:
+                cmd.extend(["-c", 'web_search="disabled"'])
             cmd.extend([session_id, prompt])
             return cmd
 
@@ -158,6 +202,8 @@ class CodexAdapter:
             cmd.extend(["--model", model])
         if effort:
             cmd.extend(["-c", f'model_reasoning_effort="{effort}"'])
+        if deny_web_search:
+            cmd.extend(["-c", 'web_search="disabled"'])
         cmd.append(prompt)
         return cmd
 

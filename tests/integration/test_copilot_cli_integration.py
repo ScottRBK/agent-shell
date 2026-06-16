@@ -367,3 +367,21 @@ class TestSessionIntegration:
         # Assert
         assert isinstance(response, AgentResponse)
         assert response.session_id == "01036873-9931-4e3e-b3cb-14793ae370f9"
+
+
+class TestDisallowedToolsIntegration:
+    async def test_disallowed_tools_reach_command_through_shell(self):
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.COPILOT_CLI)
+        ndjson = [MESSAGE_DELTA_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            async for _ in shell.stream(cwd="/tmp", prompt="test", disallowed_tools=["bash"]):
+                pass
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        assert "--deny-tool" in cmd_args
+        assert cmd_args[cmd_args.index("--deny-tool") + 1] == "shell"

@@ -119,3 +119,34 @@ class TestSessionE2E:
         # Assert
         assert isinstance(second_response, AgentResponse)
         assert len(second_response.response) > 0
+
+
+class TestDisallowedToolsE2E:
+    async def test_bash_deny_blocks_shell_under_skip_permissions(self, tmp_path):
+        # Regression guard for the load-bearing OpenCode deny path. The adapter passes
+        # --dangerously-skip-permissions (auto_approve defaults True), and the object-form
+        # OPENCODE_PERMISSION `deny` must STILL block the tool. This holds only because a deny
+        # rule raises DeniedError before the `permission.asked` event the flag auto-approves
+        # (opencode 1.14.41, permission/index.ts). An upgrade that reworks the permission engine
+        # could silently turn the deny into a no-op (the dev branch already ships a v2 engine),
+        # and the bare-string-vs-object merge quirk is fragile. Unit tests only prove agent_shell
+        # EMITS the env var; only this real run proves opencode ENFORCES it. Re-run on upgrade.
+        shell = AgentShell(agent_type=AgentType.OPENCODE)
+        marker = tmp_path / "should_not_exist.txt"
+
+        # Act — ask the agent to actually run a shell command that writes the marker, bash denied.
+        async for _ in shell.stream(
+            cwd=str(tmp_path),
+            prompt=(
+                f"Use the bash/shell tool to run exactly this command: echo DENIED > {marker.name}. "
+                "Actually execute it as a tool call; do not just describe it."
+            ),
+            disallowed_tools=["bash"],
+        ):
+            pass
+
+        # Assert — the shell tool was denied, so the command never executed and the file is absent.
+        assert not marker.exists(), (
+            "opencode executed a denied bash tool under --dangerously-skip-permissions; "
+            "deny enforcement regressed — check the opencode permission engine/version"
+        )

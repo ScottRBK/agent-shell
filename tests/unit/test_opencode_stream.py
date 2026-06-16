@@ -1,5 +1,9 @@
 import json
+import os
+import warnings
 from unittest.mock import AsyncMock, patch, MagicMock
+
+import pytest
 
 from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
 from agent_shell.models.agent import StreamEvent
@@ -191,3 +195,263 @@ class TestStream:
         assert len(events) == 2
         assert events[0].type == "text"
         assert events[1].type == "result"
+
+
+class TestDisallowedTools:
+    async def test_execute_with_disallowed_tools_runs(self):
+        # Arrange — confirms execute() -> stream() stays wired with the new param.
+        adapter = OpenCodeAdapter()
+        ndjson = [STEP_START_EVENT, TEXT_EVENT, STEP_FINISH_STOP_EVENT]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OPENCODE_PERMISSION", None)
+            with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+                response = await adapter.execute(
+                    cwd="/tmp", prompt="test", disallowed_tools=["bash"]
+                )
+
+        # Assert
+        assert response.response  # non-empty text means the stream was consumed
+
+    async def test_maps_canonical_to_permission_env(self):
+        # Arrange
+        adapter = OpenCodeAdapter()
+        ndjson = [TEXT_EVENT, STEP_FINISH_STOP_EVENT]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OPENCODE_PERMISSION", None)
+            with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+                async for _ in adapter.stream(
+                    cwd="/tmp", prompt="test", disallowed_tools=["bash", "web_search"]
+                ):
+                    pass
+
+        # Assert
+        env = mock_exec.call_args.kwargs["env"]
+        perm = json.loads(env["OPENCODE_PERMISSION"])
+        assert perm == {"bash": "deny", "websearch": "deny"}
+
+    async def test_edit_collapses_to_single_key(self):
+        # Arrange
+        adapter = OpenCodeAdapter()
+        ndjson = [TEXT_EVENT, STEP_FINISH_STOP_EVENT]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OPENCODE_PERMISSION", None)
+            with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+                async for _ in adapter.stream(
+                    cwd="/tmp", prompt="test", disallowed_tools=["edit"]
+                ):
+                    pass
+
+        # Assert
+        env = mock_exec.call_args.kwargs["env"]
+        perm = json.loads(env["OPENCODE_PERMISSION"])
+        assert perm == {"edit": "deny"}
+
+    async def test_merges_with_existing_permission(self):
+        # Arrange — inherited denies must survive.
+        adapter = OpenCodeAdapter()
+        ndjson = [TEXT_EVENT, STEP_FINISH_STOP_EVENT]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch.dict(
+            os.environ,
+            {"OPENCODE_PERMISSION": json.dumps({"bash": "deny", "read": "deny"})},
+            clear=False,
+        ):
+            with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+                async for _ in adapter.stream(
+                    cwd="/tmp", prompt="test", disallowed_tools=["web_search"]
+                ):
+                    pass
+
+        # Assert
+        env = mock_exec.call_args.kwargs["env"]
+        perm = json.loads(env["OPENCODE_PERMISSION"])
+        assert perm == {"bash": "deny", "read": "deny", "websearch": "deny"}
+
+    async def test_our_deny_wins_over_existing_allow(self):
+        # Arrange
+        adapter = OpenCodeAdapter()
+        ndjson = [TEXT_EVENT, STEP_FINISH_STOP_EVENT]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch.dict(
+            os.environ,
+            {"OPENCODE_PERMISSION": json.dumps({"websearch": "allow"})},
+            clear=False,
+        ):
+            with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+                async for _ in adapter.stream(
+                    cwd="/tmp", prompt="test", disallowed_tools=["web_search"]
+                ):
+                    pass
+
+        # Assert
+        env = mock_exec.call_args.kwargs["env"]
+        perm = json.loads(env["OPENCODE_PERMISSION"])
+        assert perm == {"websearch": "deny"}
+
+    async def test_fail_closed_on_invalid_existing_permission(self):
+        # Arrange — an unparseable inherited value must not drop our denies.
+        adapter = OpenCodeAdapter()
+        ndjson = [TEXT_EVENT, STEP_FINISH_STOP_EVENT]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act / Assert
+        with patch.dict(
+            os.environ, {"OPENCODE_PERMISSION": "{invalid"}, clear=False
+        ):
+            with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+                with pytest.warns(UserWarning, match="OPENCODE_PERMISSION"):
+                    async for _ in adapter.stream(
+                        cwd="/tmp", prompt="test", disallowed_tools=["bash"]
+                    ):
+                        pass
+
+        env = mock_exec.call_args.kwargs["env"]
+        perm = json.loads(env["OPENCODE_PERMISSION"])
+        assert perm == {"bash": "deny"}
+
+    async def test_inherited_global_deny_string_promoted_to_object_wildcard(self):
+        # Arrange — OPENCODE_PERMISSION can be a bare string "deny" (global deny-all). We must
+        # honor that intent, but opencode's env-var path drops a bare primitive string (remeda
+        # mergeDeep no-op, verified on 1.14.41), so re-emitting "deny" would be silent fail-open.
+        # It must instead be promoted to the object wildcard form opencode actually enforces,
+        # with our explicit per-tool deny merged on top.
+        adapter = OpenCodeAdapter()
+        ndjson = [TEXT_EVENT, STEP_FINISH_STOP_EVENT]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch.dict(
+            os.environ, {"OPENCODE_PERMISSION": json.dumps("deny")}, clear=False
+        ):
+            with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+                async for _ in adapter.stream(
+                    cwd="/tmp", prompt="test", disallowed_tools=["bash"]
+                ):
+                    pass
+
+        # Assert — object form (not the bare string), carrying both the global wildcard deny
+        # and our explicit bash deny.
+        env = mock_exec.call_args.kwargs["env"]
+        perm = json.loads(env["OPENCODE_PERMISSION"])
+        assert perm == {"*": "deny", "bash": "deny"}
+
+    async def test_inherited_permissive_scalar_warns_and_applies_our_denies(self):
+        # Arrange — a global "allow"/"ask" scalar isn't a per-tool map; apply our denies on an
+        # empty base (more restrictive for our tools) and warn that we couldn't merge granularly.
+        adapter = OpenCodeAdapter()
+        ndjson = [TEXT_EVENT, STEP_FINISH_STOP_EVENT]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act / Assert
+        with patch.dict(
+            os.environ, {"OPENCODE_PERMISSION": json.dumps("allow")}, clear=False
+        ):
+            with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+                with pytest.warns(UserWarning, match="OPENCODE_PERMISSION"):
+                    async for _ in adapter.stream(
+                        cwd="/tmp", prompt="test", disallowed_tools=["bash"]
+                    ):
+                        pass
+
+        env = mock_exec.call_args.kwargs["env"]
+        assert json.loads(env["OPENCODE_PERMISSION"]) == {"bash": "deny"}
+
+    async def test_env_pins_pwd_and_omits_permission_key_when_no_disallowed_tools(self):
+        # Arrange
+        adapter = OpenCodeAdapter()
+        ndjson = [TEXT_EVENT, STEP_FINISH_STOP_EVENT]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act — no deny-list, and no inherited OPENCODE_PERMISSION.
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OPENCODE_PERMISSION", None)
+            with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+                async for _ in adapter.stream(cwd="/tmp", prompt="test"):
+                    pass
+
+        # Assert — env is never None now: PWD must be pinned on every run (opencode reads
+        # the project dir from $PWD) and the parent env flows through, but with nothing to
+        # deny we must not inject a spurious OPENCODE_PERMISSION key.
+        env = mock_exec.call_args.kwargs["env"]
+        assert env is not None
+        assert env["PWD"] == os.path.abspath("/tmp")
+        assert "PATH" in env
+        assert "OPENCODE_PERMISSION" not in env
+
+    async def test_inherited_bare_deny_promoted_even_without_disallowed_tools(self):
+        # Arrange — B2 fix: an inherited bare-string "deny" (global deny-all intent) must be
+        # promoted to the {"*": "deny"} object form opencode actually enforces, EVEN when the
+        # caller passes no disallowed_tools. Re-forwarding the bare string is a silent no-op under
+        # --dangerously-skip-permissions (remeda mergeDeep drops the primitive), so the user's
+        # deny-all would fail OPEN. Promotion must not be gated on a caller deny-list being present.
+        adapter = OpenCodeAdapter()
+        ndjson = [TEXT_EVENT, STEP_FINISH_STOP_EVENT]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act — note: NO disallowed_tools passed.
+        with patch.dict(
+            os.environ, {"OPENCODE_PERMISSION": json.dumps("deny")}, clear=False
+        ):
+            with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+                async for _ in adapter.stream(cwd="/tmp", prompt="test"):
+                    pass
+
+        # Assert — promoted to the enforceable wildcard object, not the no-op bare string.
+        env = mock_exec.call_args.kwargs["env"]
+        perm = json.loads(env["OPENCODE_PERMISSION"])
+        assert perm == {"*": "deny"}
+
+    async def test_inherited_object_permission_preserved_without_disallowed_tools(self):
+        # Arrange — regression guard for the B2 refactor: with no caller denies, a valid inherited
+        # OBJECT policy must flow through untouched. We only rewrite the known-no-op bare string;
+        # we must not drop or mangle a legitimate inherited per-tool map.
+        adapter = OpenCodeAdapter()
+        ndjson = [TEXT_EVENT, STEP_FINISH_STOP_EVENT]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act — note: NO disallowed_tools passed.
+        with patch.dict(
+            os.environ,
+            {"OPENCODE_PERMISSION": json.dumps({"bash": "deny"})},
+            clear=False,
+        ):
+            with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+                async for _ in adapter.stream(cwd="/tmp", prompt="test"):
+                    pass
+
+        # Assert — inherited object survives intact.
+        env = mock_exec.call_args.kwargs["env"]
+        assert json.loads(env["OPENCODE_PERMISSION"]) == {"bash": "deny"}
+
+    async def test_verbatim_passthrough_name_in_permission_env(self):
+        # Arrange — a non-canonical name passes through verbatim as a deny key.
+        adapter = OpenCodeAdapter()
+        ndjson = [TEXT_EVENT, STEP_FINISH_STOP_EVENT]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OPENCODE_PERMISSION", None)
+            with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+                async for _ in adapter.stream(
+                    cwd="/tmp", prompt="test", disallowed_tools=["mytool"]
+                ):
+                    pass
+
+        # Assert
+        env = mock_exec.call_args.kwargs["env"]
+        perm = json.loads(env["OPENCODE_PERMISSION"])
+        assert perm == {"mytool": "deny"}
