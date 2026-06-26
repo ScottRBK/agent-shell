@@ -89,6 +89,16 @@ RESULT_EVENT_SUCCESS = {
     "duration_ms": 10370,
     "total_cost_usd": 0.16098,
     "session_id": "test-session",
+    # Claude Code reports cumulative token usage on the (single) result event. The original
+    # fixture omitted `usage`, which wrongly suggested Claude reports no tokens — refreshed
+    # from a live stream-json run so the output_tokens path is exercised (see
+    # docs/development/total_token_count.md §7).
+    "usage": {
+        "input_tokens": 4,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 14848,
+        "output_tokens": 6,
+    },
 }
 
 RESULT_EVENT_ERROR = {

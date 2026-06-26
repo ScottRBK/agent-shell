@@ -13,6 +13,7 @@ from tests.unit.copilot_fixtures import (
     MESSAGE_EVENT_NO_TOOLS,
     MESSAGE_EVENT_WITH_TOOLS,
     RESULT_EVENT_SUCCESS,
+    make_assistant_message,
 )
 
 
@@ -301,6 +302,28 @@ class TestExecuteIntegration:
         assert isinstance(response, AgentResponse)
         assert len(response.response) > 0, "Expected non-empty response text"
         assert response.cost == 0.0, "Expected cost to be 0.0 (Copilot has no pricing)"
+
+    async def test_execute_accumulates_output_tokens_across_messages(self):
+        # Arrange — full AgentShell -> adapter path: the deterministic CI counterpart to the
+        # Copilot multi-step e2e guard. Copilot's result event carries no tokens; the total
+        # lives only on each assistant.message, so it must sum 618 + 71 + 201 + 36, not take
+        # the last message (36) nor read 0 from the result.
+        shell = AgentShell(agent_type=AgentType.COPILOT_CLI)
+        ndjson = [
+            make_assistant_message(618),
+            make_assistant_message(71),
+            make_assistant_message(201),
+            make_assistant_message(36),
+            RESULT_EVENT_SUCCESS,
+        ]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+            response = await shell.execute(cwd="/tmp", prompt="write two files, read them back")
+
+        # Assert
+        assert response.output_tokens == 926
 
 
 class TestSessionIntegration:

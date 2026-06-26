@@ -54,8 +54,12 @@ class ClaudeCodeAdapter():
         text = "\n".join(e.content for e in chunks if e.type == "text")
         cost = next((e.cost for e in reversed(chunks) if e.type == "result"), 0.0)
         duration = next((e.duration for e in reversed(chunks) if e.type == "result"), 0.0)
+        output_tokens = next((e.output_tokens for e in reversed(chunks) if e.type == "result"), 0)
         returned_session_id = next((e.session_id for e in chunks if e.session_id), None)
-        return AgentResponse(response=text, cost=cost, session_id=returned_session_id, duration=duration)
+        return AgentResponse(
+            response=text, cost=cost, session_id=returned_session_id,
+            duration=duration, output_tokens=output_tokens,
+        )
 
     async def stream(
             self,
@@ -184,10 +188,16 @@ class ClaudeCodeAdapter():
         elif t == "result":
             cost = event.get("total_cost_usd", 0) or 0
             duration = (event.get("duration_ms", 0) or 0) / 1000
+            # Claude's result.usage.output_tokens is already cumulative for the run.
+            # `or {}` tolerates a present-but-null usage; `or 0` a null token field.
+            output_tokens = (event.get("usage") or {}).get("output_tokens", 0) or 0
             is_error = event.get("is_error", False)
             status = "error" if is_error else "ok"
             logger.info("Result: %s (cost=$%.4f, duration=%.1fs)", status, cost, duration)
-            events.append(StreamEvent(type="result", content=status, cost=cost, duration=duration, session_id=session_id))
+            events.append(StreamEvent(
+                type="result", content=status, cost=cost, duration=duration,
+                session_id=session_id, output_tokens=output_tokens,
+            ))
 
         return events
 

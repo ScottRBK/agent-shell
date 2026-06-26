@@ -56,8 +56,12 @@ class OpenCodeAdapter():
         text = "\n".join(e.content for e in chunks if e.type == "text")
         cost = next((e.cost for e in reversed(chunks) if e.type == "result"), 0.0)
         duration = next((e.duration for e in reversed(chunks) if e.type == "result"), 0.0)
+        output_tokens = next((e.output_tokens for e in reversed(chunks) if e.type == "result"), 0)
         returned_session_id = next((e.session_id for e in chunks if e.session_id), None)
-        return AgentResponse(response=text, cost=cost, session_id=returned_session_id, duration=duration)
+        return AgentResponse(
+            response=text, cost=cost, session_id=returned_session_id,
+            duration=duration, output_tokens=output_tokens,
+        )
 
     async def stream(
             self,
@@ -119,6 +123,11 @@ class OpenCodeAdapter():
         register_process_group(process.pid)
 
         buffer = ""
+        # Per-run accumulator (local to this stream() call, never instance state, so counts
+        # never leak between runs on a reused adapter). OpenCode reports billed output tokens
+        # per step (output + the separately-reported reasoning); we sum every step_finish and
+        # emit the total on the stop result event.
+        run_output_tokens = 0
         while True:
             chunk = await process.stdout.read(65536)
             if not chunk:
@@ -126,9 +135,11 @@ class OpenCodeAdapter():
                     try:
                         raw = json.loads(buffer)
                         logger.debug("Raw event: %s", raw)
+                        run_output_tokens += self._step_output_tokens(raw)
                         for event in self._parse_event(
                             event=raw,
                             include_thinking=include_thinking,
+                            run_output_tokens=run_output_tokens,
                         ):
                             yield event
                     except json.JSONDecodeError:
@@ -142,9 +153,11 @@ class OpenCodeAdapter():
                     try:
                         raw = json.loads(line)
                         logger.debug("Raw event: %s", raw)
+                        run_output_tokens += self._step_output_tokens(raw)
                         for event in self._parse_event(
                             event=raw,
                             include_thinking=include_thinking,
+                            run_output_tokens=run_output_tokens,
                         ):
                             yield event
                     except json.JSONDecodeError:
@@ -246,7 +259,29 @@ class OpenCodeAdapter():
             )
         return {}, False
 
-    def _parse_event(self, event: dict, include_thinking: bool) -> list[StreamEvent]:
+    def _step_output_tokens(self, raw: dict) -> int:
+        """Per-step billed output tokens from a step_finish event (0 for any other event).
+
+        This is a COST measure, so the figure must include reasoning tokens (billed at the
+        output rate) to stay consistent with the reasoning-inclusive Claude/Codex adapters.
+        OpenCode deliberately subtracts reasoning OUT of tokens.output
+        (session.ts: `output = outputTokens - reasoningTokens`) and reports it in the sibling
+        tokens.reasoning field, so for reasoning models tokens.output alone UNDERCOUNTS billed
+        output. We add them back: output + reasoning. The two fields are disjoint, so this does
+        not double-count; for Anthropic reasoning is 0 (already folded into output). Both are
+        per-step (not cumulative), so stream() sums these across the run and emits the total on
+        the terminal (stop) result event.
+        """
+        if raw.get("type") != "step_finish":
+            return 0
+        tokens = (raw.get("part") or {}).get("tokens") or {}
+        output = tokens.get("output", 0) or 0
+        reasoning = tokens.get("reasoning", 0) or 0
+        return output + reasoning
+
+    def _parse_event(
+        self, event: dict, include_thinking: bool, run_output_tokens: int = 0
+    ) -> list[StreamEvent]:
         t = event.get("type", "")
         session_id = event.get("sessionID")
         events = []
@@ -274,6 +309,7 @@ class OpenCodeAdapter():
                     content="ok",
                     cost=cost,
                     session_id=session_id,
+                    output_tokens=run_output_tokens,
                 ))
 
         elif t == "error":

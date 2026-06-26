@@ -97,6 +97,7 @@ class TestParseEventResult:
         assert events[0].content == "ok"
         assert events[0].cost == 0.16098
         assert events[0].duration == 10.37
+        assert events[0].output_tokens == 6
 
     def test_parses_error_result(self):
         # Arrange
@@ -111,6 +112,45 @@ class TestParseEventResult:
         assert events[0].content == "error"
         assert events[0].cost == 0.05
         assert events[0].duration == 5.0
+
+
+class TestParseEventResultOutputTokens:
+    def test_result_without_usage_defaults_output_tokens_to_zero(self):
+        # Arrange — defensive: a result event missing `usage` must not crash.
+        adapter = ClaudeCodeAdapter()
+        event = {
+            "type": "result",
+            "is_error": False,
+            "duration_ms": 1000,
+            "total_cost_usd": 0.01,
+            "session_id": "test-session",
+        }
+
+        # Act
+        events = adapter._parse_event(event, include_thinking=False)
+
+        # Assert
+        assert len(events) == 1
+        assert events[0].output_tokens == 0
+
+    def test_null_usage_defaults_output_tokens_to_zero(self):
+        # Arrange — a present-but-null usage must degrade to 0, not crash (D1).
+        adapter = ClaudeCodeAdapter()
+        event = {
+            "type": "result",
+            "is_error": False,
+            "duration_ms": 1000,
+            "total_cost_usd": 0.01,
+            "session_id": "test-session",
+            "usage": None,
+        }
+
+        # Act
+        events = adapter._parse_event(event, include_thinking=False)
+
+        # Assert
+        assert len(events) == 1
+        assert events[0].output_tokens == 0
 
 
 class TestParseEventSystem:

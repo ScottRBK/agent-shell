@@ -58,3 +58,16 @@ class TestExecute:
 
         # Assert
         assert response.cost == 0.16098
+
+    async def test_extracts_output_tokens_from_result(self):
+        # Arrange
+        adapter = ClaudeCodeAdapter()
+        ndjson = [TEXT_EVENT, TOOL_USE_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+            response = await adapter.execute(cwd="/tmp", prompt="test")
+
+        # Assert
+        assert response.output_tokens == 6

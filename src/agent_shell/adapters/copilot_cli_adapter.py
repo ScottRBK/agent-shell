@@ -60,8 +60,12 @@ class CopilotCLIAdapter:
         text = "\n".join(e.content for e in chunks if e.type == "text")
         cost = next((e.cost for e in reversed(chunks) if e.type == "result"), 0.0)
         duration = next((e.duration for e in reversed(chunks) if e.type == "result"), 0.0)
+        output_tokens = next((e.output_tokens for e in reversed(chunks) if e.type == "result"), 0)
         returned_session_id = next((e.session_id for e in chunks if e.session_id), None)
-        return AgentResponse(response=text, cost=cost, session_id=returned_session_id, duration=duration)
+        return AgentResponse(
+            response=text, cost=cost, session_id=returned_session_id,
+            duration=duration, output_tokens=output_tokens,
+        )
 
     async def stream(
             self,
@@ -129,6 +133,10 @@ class CopilotCLIAdapter:
         register_process_group(process.pid)
 
         buffer = ""
+        # Per-run accumulator (local to this stream() call, never instance state, so counts
+        # never leak between runs on a reused adapter). Copilot reports output tokens per
+        # assistant.message; we sum them and stamp the total on the result event.
+        run_output_tokens = 0
         while True:
             chunk = await process.stdout.read(65536)
             if not chunk:
@@ -136,9 +144,11 @@ class CopilotCLIAdapter:
                     try:
                         raw = json.loads(buffer)
                         logger.debug("Raw event: %s", raw)
+                        run_output_tokens += self._message_output_tokens(raw)
                         for event in self._parse_event(
                             event=raw,
                             include_thinking=include_thinking,
+                            run_output_tokens=run_output_tokens,
                         ):
                             yield event
                     except json.JSONDecodeError:
@@ -152,9 +162,11 @@ class CopilotCLIAdapter:
                     try:
                         raw = json.loads(line)
                         logger.debug("Raw event: %s", raw)
+                        run_output_tokens += self._message_output_tokens(raw)
                         for event in self._parse_event(
                             event=raw,
                             include_thinking=include_thinking,
+                            run_output_tokens=run_output_tokens,
                         ):
                             yield event
                     except json.JSONDecodeError:
@@ -171,7 +183,20 @@ class CopilotCLIAdapter:
             logger.warning("Process exited with code %d: %s", process.returncode, error_msg)
             yield StreamEvent(type="error", content=error_msg)
 
-    def _parse_event(self, event: dict, include_thinking: bool) -> list[StreamEvent]:
+    def _message_output_tokens(self, raw: dict) -> int:
+        """Per-message output-token count from an assistant.message event (0 otherwise).
+
+        Copilot reports output tokens per assistant.message (not cumulative) and the result
+        event carries none, so stream() sums these across the run and stamps the total on the
+        result event.
+        """
+        if raw.get("type") != "assistant.message":
+            return 0
+        return (raw.get("data") or {}).get("outputTokens", 0) or 0
+
+    def _parse_event(
+        self, event: dict, include_thinking: bool, run_output_tokens: int = 0
+    ) -> list[StreamEvent]:
         t = event.get("type", "")
         events = []
 
@@ -210,6 +235,7 @@ class CopilotCLIAdapter:
                 cost=0.0,
                 duration=duration,
                 session_id=session_id,
+                output_tokens=run_output_tokens,
             ))
 
         return events

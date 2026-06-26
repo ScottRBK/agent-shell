@@ -163,6 +163,7 @@ class TestExecuteIntegration:
         assert isinstance(response, AgentResponse)
         assert len(response.response) > 0, "Expected non-empty response text"
         assert response.cost > 0, "Expected cost to be greater than 0"
+        assert response.output_tokens == 6, "Expected output_tokens from result.usage"
 
     async def test_execute_with_effort(self):
         # Arrange

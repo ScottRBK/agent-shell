@@ -150,3 +150,47 @@ class TestDisallowedToolsE2E:
             "opencode executed a denied bash tool under --dangerously-skip-permissions; "
             "deny enforcement regressed — check the opencode permission engine/version"
         )
+
+
+class TestOutputTokensE2E:
+    async def test_execute_reports_output_tokens(self):
+        # Canary: a real run must report generated tokens. Fails the moment OpenCode renames or
+        # drops step_finish.part.tokens.output — the silent-degrade-to-0 bug to catch.
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.OPENCODE)
+
+        # Act
+        response = await shell.execute(
+            cwd="/tmp",
+            prompt="Write a short paragraph about the sea.",
+            allowed_tools=[],
+        )
+
+        # Assert
+        assert response.output_tokens > 0, (
+            "No output tokens from a real run — the CLI's usage field may have been "
+            "renamed/dropped; re-verify step_finish.part.tokens.output in the adapter"
+        )
+
+    async def test_multistep_accumulates_output_tokens(self, tmp_path):
+        # The live counterpart to the unit accumulation guard: a real tool-using run must sum
+        # output across every step_finish, not just the final (stop) step. Only this proves
+        # accumulation works against OpenCode's actual multi-step event stream.
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.OPENCODE)
+
+        # Act
+        response = await shell.execute(
+            cwd=str(tmp_path),
+            prompt=(
+                "Create one.txt containing 'alpha', create two.txt containing 'beta', "
+                "read both back, then tell me the two words."
+            ),
+        )
+
+        # Assert — loose plausibility floor: a take-last regression would cap this at the final
+        # step's output (tens of tokens), well under 100.
+        assert response.output_tokens > 100, (
+            "Multi-step output tokens implausibly low — accumulation across step_finish "
+            "events likely regressed to take-last"
+        )

@@ -105,3 +105,24 @@ class TestDisallowedToolsE2E:
             f"(possible upstream key rename): {[e.content for e in error_events]}"
         )
         assert len(result_events) == 1
+
+
+class TestOutputTokensE2E:
+    async def test_execute_reports_output_tokens(self):
+        # Canary: a real run must report generated tokens. Fails the moment Codex renames or
+        # drops turn.completed.usage.output_tokens — the silent-degrade-to-0 bug to catch.
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.CODEX)
+
+        # Act
+        response = await shell.execute(
+            cwd="/tmp",
+            prompt="Write a short paragraph about the sea.",
+            model=MODEL,
+        )
+
+        # Assert
+        assert response.output_tokens > 0, (
+            "No output tokens from a real run — the CLI's usage field may have been "
+            "renamed/dropped; re-verify turn.completed.usage.output_tokens in the adapter"
+        )

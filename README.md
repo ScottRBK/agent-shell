@@ -33,6 +33,7 @@ response = await shell.execute(
 
 print(response.response)
 print(f"Cost: ${response.cost:.4f}")
+print(f"Output tokens: {response.output_tokens}")  # billed output, reasoning included
 print(f"Session: {response.session_id}")
 
 # Resume the conversation using the session_id
@@ -44,6 +45,9 @@ follow_up = await shell.execute(
     session_id=response.session_id,
 )
 ```
+
+> `output_tokens` is a cost measure: the billed output-token count, which **includes reasoning
+> tokens** (they are billed at the output rate). It is reported consistently across all adapters.
 
 ### Stream
 

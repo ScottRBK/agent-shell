@@ -18,6 +18,7 @@ class AgentResponse:
     cost: float
     session_id: str | None = None
     duration: float = 0.0
+    output_tokens: int = 0
 
 @dataclass
 class StreamEvent:
@@ -26,6 +27,7 @@ class StreamEvent:
     cost: float = 0.0
     duration: float = 0.0
     session_id: str | None = None
+    output_tokens: int = 0
 
 @dataclass
 class MCPServerSpec:

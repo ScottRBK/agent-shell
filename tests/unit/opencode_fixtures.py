@@ -95,6 +95,39 @@ STEP_FINISH_TOOL_CALLS_EVENT = {
     },
 }
 
+def make_step_finish(
+    output: int, reason: str, session_id: str = "test-session", reasoning: int = 0
+) -> dict:
+    """Build a step_finish event carrying per-step output and reasoning token counts.
+
+    OpenCode emits one step_finish per agentic step. Its `tokens.output` is that step's own
+    (non-cumulative) output with reasoning ALREADY SUBTRACTED OUT (session.ts:
+    `output = outputTokens - reasoningTokens`), and `tokens.reasoning` is the sibling reasoning
+    count. Reasoning is billed at the output rate, so a cost-consistent measure sums
+    output + reasoning across every step. `reason` is "tool-calls" for work steps and "stop"
+    for the terminal step.
+    """
+    return {
+        "type": "step_finish",
+        "timestamp": 1774816328736,
+        "sessionID": session_id,
+        "part": {
+            "reason": reason,
+            "messageID": "msg_abc123",
+            "sessionID": session_id,
+            "type": "step-finish",
+            "tokens": {
+                "total": 100 + output + reasoning,
+                "input": 100,
+                "output": output,
+                "reasoning": reasoning,
+                "cache": {"write": 0, "read": 0},
+            },
+            "cost": 0.01,
+        },
+    }
+
+
 ERROR_EVENT = {
     "type": "error",
     "timestamp": 1774816285706,

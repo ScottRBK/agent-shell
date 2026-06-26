@@ -245,6 +245,9 @@ class TestExecuteIntegration:
         assert isinstance(response, AgentResponse)
         assert response.response == "PONG"
         assert response.cost == 0.0
+        assert response.output_tokens == 22, (
+            "Expected raw output_tokens (reasoning-inclusive) from turn.completed.usage"
+        )
 
 
 class TestStderrAndErrorEvents:

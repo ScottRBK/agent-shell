@@ -121,12 +121,52 @@ class TestParseEventTurnCompleted:
         # Act
         events = adapter._parse_event(TURN_COMPLETED_EVENT)
 
-        # Assert
+        # Assert — output_tokens is reported raw (22). Codex's output_tokens already includes
+        # reasoning tokens (billed at the output rate); for a cost measure we keep them in.
         assert len(events) == 1
         assert events[0].type == "result"
         assert events[0].content == "ok"
         assert events[0].cost == 0.0
         assert events[0].duration == 0.0
+        assert events[0].output_tokens == 22
+
+    def test_result_without_usage_defaults_output_tokens_to_zero(self):
+        # Arrange — `codex exec` always emits usage, but be defensive against its absence.
+        adapter = CodexAdapter()
+
+        # Act
+        events = adapter._parse_event({"type": "turn.completed"})
+
+        # Assert
+        assert len(events) == 1
+        assert events[0].output_tokens == 0
+
+    def test_null_usage_defaults_output_tokens_to_zero(self):
+        # Arrange — a present-but-null usage must degrade to 0, not crash (D1).
+        adapter = CodexAdapter()
+
+        # Act
+        events = adapter._parse_event({"type": "turn.completed", "usage": None})
+
+        # Assert
+        assert len(events) == 1
+        assert events[0].output_tokens == 0
+
+    def test_output_tokens_includes_reasoning(self):
+        # Arrange — this is a cost measure: Codex bills reasoning at the output rate and folds
+        # it into usage.output_tokens, so the reported figure must KEEP reasoning in (22), not
+        # strip it. Guards against anyone "helpfully" subtracting reasoning_output_tokens.
+        adapter = CodexAdapter()
+        event = {
+            "type": "turn.completed",
+            "usage": {"output_tokens": 22, "reasoning_output_tokens": 14},
+        }
+
+        # Act
+        events = adapter._parse_event(event)
+
+        # Assert
+        assert events[0].output_tokens == 22
 
 
 class TestParseEventUnknown:

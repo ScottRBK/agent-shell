@@ -206,3 +206,25 @@ class TestSessionE2E:
         # Assert
         assert isinstance(second_response, AgentResponse)
         assert len(second_response.response) > 0
+
+
+class TestOutputTokensE2E:
+    async def test_execute_reports_output_tokens(self):
+        # Canary: a real run must report generated tokens. Fails the moment Claude renames or
+        # drops result.usage.output_tokens — the silent-degrade-to-0 bug an e2e exists to catch.
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+
+        # Act
+        response = await shell.execute(
+            cwd="/tmp",
+            prompt="Write a short paragraph about the sea.",
+            allowed_tools=[],
+            model="haiku",
+        )
+
+        # Assert
+        assert response.output_tokens > 0, (
+            "No output tokens from a real run — the CLI's usage field may have been "
+            "renamed/dropped; re-verify result.usage.output_tokens in the adapter"
+        )

@@ -12,6 +12,7 @@ from tests.unit.copilot_fixtures import (
     MESSAGE_DELTA_EVENT,
     MESSAGE_EVENT_NO_TOOLS,
     RESULT_EVENT_SUCCESS,
+    make_assistant_message,
 )
 
 
@@ -413,6 +414,67 @@ class TestStream:
         assert "--output-format" in cmd_args
         assert cmd_args[cmd_args.index("--output-format") + 1] == "json"
         assert "--silent" in cmd_args
+
+
+class TestOutputTokens:
+    async def test_result_event_carries_accumulated_output_tokens(self):
+        # Arrange — the single result StreamEvent must carry the summed per-message totals.
+        # MESSAGE_DELTA_EVENT yields a text event so D5 (intermediate events == 0) is testable.
+        adapter = CopilotCLIAdapter()
+        ndjson = [
+            MESSAGE_DELTA_EVENT,
+            make_assistant_message(618),
+            make_assistant_message(71),
+            make_assistant_message(201),
+            make_assistant_message(36),
+            RESULT_EVENT_SUCCESS,
+        ]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        events: list[StreamEvent] = []
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+            async for event in adapter.stream(cwd="/tmp", prompt="test"):
+                events.append(event)
+
+        # Assert
+        result_events = [e for e in events if e.type == "result"]
+        assert len(result_events) == 1
+        assert result_events[0].output_tokens == 926
+        # D5: intermediate events never carry the running total.
+        assert all(e.output_tokens == 0 for e in events if e.type in ("text", "tool_use"))
+
+    async def test_accumulates_output_tokens_via_eof_buffer_path(self):
+        # Arrange — when the final stdout chunk has NO trailing newline, the result event is
+        # flushed through the EOF-buffer branch of stream() rather than the newline loop. That
+        # branch must accumulate identically (regression guard for the duplicated logic).
+        adapter = CopilotCLIAdapter()
+        ndjson = [
+            make_assistant_message(618),
+            make_assistant_message(36),
+            RESULT_EVENT_SUCCESS,
+        ]
+        encoded = "\n".join(json.dumps(line) for line in ndjson)  # NOTE: no trailing newline
+        chunks = [encoded.encode("utf-8"), b""]
+        mock_process = AsyncMock()
+        mock_process.stdout = MagicMock()
+        mock_process.stdout.read = AsyncMock(side_effect=chunks)
+        mock_process.stderr = MagicMock()
+        mock_process.stderr.read = AsyncMock(return_value=b"")
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock()
+        mock_process.pid = 12345
+
+        # Act
+        events: list[StreamEvent] = []
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+            async for event in adapter.stream(cwd="/tmp", prompt="test"):
+                events.append(event)
+
+        # Assert — 618 + 36 == 654, stamped on the result event parsed at EOF.
+        result_events = [e for e in events if e.type == "result"]
+        assert len(result_events) == 1
+        assert result_events[0].output_tokens == 654
 
 
 class TestExecuteForwardsDisallowedTools:

@@ -165,6 +165,28 @@ MESSAGE_EVENT_WITH_TOOLS = {
     "parentId": "d685fba7-7f52-47cf-8ad8-a513661328ae",
 }
 
+def make_assistant_message(output_tokens: int, content: str = "", tool_requests=None) -> dict:
+    """Build an assistant.message event carrying a per-message output-token count.
+
+    Copilot CLI reports output tokens on every assistant.message (per message, not
+    cumulative) and the result event has NO token fields, so a multi-message run must SUM
+    these across the run.
+    """
+    return {
+        "type": "assistant.message",
+        "data": {
+            "messageId": "msg-test",
+            "content": content,
+            "toolRequests": tool_requests or [],
+            "interactionId": "interaction-test",
+            "phase": "commentary",
+            "outputTokens": output_tokens,
+        },
+        "id": "evt-test",
+        "timestamp": "2026-04-18T23:14:51.604Z",
+    }
+
+
 TOOL_EXEC_START_EVENT = {
     "type": "tool.execution_start",
     "data": {

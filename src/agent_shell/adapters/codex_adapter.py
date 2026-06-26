@@ -46,8 +46,12 @@ class CodexAdapter:
         text = "\n".join(e.content for e in chunks if e.type == "text")
         cost = next((e.cost for e in reversed(chunks) if e.type == "result"), 0.0)
         duration = next((e.duration for e in reversed(chunks) if e.type == "result"), 0.0)
+        output_tokens = next((e.output_tokens for e in reversed(chunks) if e.type == "result"), 0)
         returned_session_id = next((e.session_id for e in chunks if e.session_id), None)
-        return AgentResponse(response=text, cost=cost, session_id=returned_session_id, duration=duration)
+        return AgentResponse(
+            response=text, cost=cost, session_id=returned_session_id,
+            duration=duration, output_tokens=output_tokens,
+        )
 
     async def stream(
             self,
@@ -229,7 +233,16 @@ class CodexAdapter:
                 events.append(StreamEvent(type="tool_use", content=command))
 
         elif t == "turn.completed":
-            events.append(StreamEvent(type="result", content="ok", cost=0.0, duration=0.0))
+            # One turn.completed per `codex exec`, so its usage is the whole-run total. Codex
+            # mirrors the OpenAI Responses API where usage.output_tokens already INCLUDES
+            # reasoning tokens — which is what we want: this is a cost measure and reasoning is
+            # billed at the output rate. So report output_tokens raw, no subtraction.
+            # `or {}` tolerates a null usage object; `or 0` a null token field.
+            output_tokens = (event.get("usage") or {}).get("output_tokens", 0) or 0
+            events.append(StreamEvent(
+                type="result", content="ok", cost=0.0, duration=0.0,
+                output_tokens=output_tokens,
+            ))
 
         return events
 

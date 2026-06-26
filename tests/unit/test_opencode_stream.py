@@ -14,6 +14,7 @@ from tests.unit.opencode_fixtures import (
     TOOL_USE_EVENT,
     STEP_FINISH_STOP_EVENT,
     STEP_FINISH_TOOL_CALLS_EVENT,
+    make_step_finish,
 )
 
 
@@ -195,6 +196,146 @@ class TestStream:
         assert len(events) == 2
         assert events[0].type == "text"
         assert events[1].type == "result"
+
+
+class TestOutputTokens:
+    async def test_accumulates_output_tokens_across_step_finish_events(self):
+        # Arrange — OpenCode output is per-step and NOT cumulative. The two work steps carry
+        # reason="tool-calls" (which emits no result event) and only the final stop step emits
+        # one, so the total must be summed across ALL step_finish events, not taken from the
+        # last (stop) step alone.
+        adapter = OpenCodeAdapter()
+        ndjson = [
+            STEP_START_EVENT,
+            TOOL_USE_EVENT,
+            make_step_finish(286, "tool-calls"),
+            STEP_START_EVENT,
+            TOOL_USE_EVENT,
+            make_step_finish(193, "tool-calls"),
+            STEP_START_EVENT,
+            TEXT_EVENT,
+            make_step_finish(42, "stop"),
+        ]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        events: list[StreamEvent] = []
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+            async for event in adapter.stream(cwd="/tmp", prompt="test"):
+                events.append(event)
+
+        # Assert — 286 + 193 + 42, NOT 42 (the take-last bug would yield 42).
+        result_events = [e for e in events if e.type == "result"]
+        assert len(result_events) == 1
+        assert result_events[0].output_tokens == 521
+        # D5: intermediate events never carry the running total.
+        assert all(e.output_tokens == 0 for e in events if e.type in ("text", "tool_use"))
+
+    async def test_accumulates_output_tokens_via_eof_buffer_path(self):
+        # Arrange — when the final stdout chunk has NO trailing newline, the terminal stop
+        # event is flushed through the EOF-buffer branch of stream() rather than the newline
+        # loop. That branch must accumulate identically (regression guard for the duplicated
+        # accumulation logic). 286 (loop) + 42 (EOF) == 328.
+        adapter = OpenCodeAdapter()
+        ndjson = [
+            STEP_START_EVENT,
+            TOOL_USE_EVENT,
+            make_step_finish(286, "tool-calls"),
+            STEP_START_EVENT,
+            TEXT_EVENT,
+            make_step_finish(42, "stop"),
+        ]
+        encoded = "\n".join(json.dumps(line) for line in ndjson)  # NOTE: no trailing newline
+        chunks = [encoded.encode("utf-8"), b""]
+        mock_process = AsyncMock()
+        mock_process.stdout = MagicMock()
+        mock_process.stdout.read = AsyncMock(side_effect=chunks)
+        mock_process.stderr = MagicMock()
+        mock_process.stderr.read = AsyncMock(return_value=b"")
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock()
+        mock_process.pid = 12345
+
+        # Act
+        events: list[StreamEvent] = []
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+            async for event in adapter.stream(cwd="/tmp", prompt="test"):
+                events.append(event)
+
+        # Assert
+        result_events = [e for e in events if e.type == "result"]
+        assert len(result_events) == 1
+        assert result_events[0].output_tokens == 328
+
+    async def test_includes_reasoning_in_output_tokens(self):
+        # Arrange — OpenCode deliberately splits reasoning OUT of tokens.output
+        # (session.ts: `output = outputTokens - reasoningTokens`) and reports it in the
+        # sibling tokens.reasoning field. Reasoning is billed at the output rate, so for a
+        # cost-consistent measure (matching the reasoning-inclusive Claude/Codex adapters)
+        # the adapter must add it back: output 200 + reasoning 120 == 320, not 200.
+        adapter = OpenCodeAdapter()
+        ndjson = [
+            STEP_START_EVENT,
+            TEXT_EVENT,
+            make_step_finish(200, "stop", reasoning=120),
+        ]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        events: list[StreamEvent] = []
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+            async for event in adapter.stream(cwd="/tmp", prompt="test"):
+                events.append(event)
+
+        # Assert
+        result_events = [e for e in events if e.type == "result"]
+        assert len(result_events) == 1
+        assert result_events[0].output_tokens == 320
+
+    async def test_accumulates_output_plus_reasoning_across_steps(self):
+        # Arrange — sum (output + reasoning) over EVERY step, since OpenCode excludes reasoning
+        # from tokens.output. Step 1: 286+14, step 2: 193+30, stop: 42+8 -> 573.
+        adapter = OpenCodeAdapter()
+        ndjson = [
+            STEP_START_EVENT,
+            TOOL_USE_EVENT,
+            make_step_finish(286, "tool-calls", reasoning=14),
+            STEP_START_EVENT,
+            TOOL_USE_EVENT,
+            make_step_finish(193, "tool-calls", reasoning=30),
+            STEP_START_EVENT,
+            TEXT_EVENT,
+            make_step_finish(42, "stop", reasoning=8),
+        ]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        events: list[StreamEvent] = []
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+            async for event in adapter.stream(cwd="/tmp", prompt="test"):
+                events.append(event)
+
+        # Assert — 286+14 + 193+30 + 42+8 == 573.
+        result_events = [e for e in events if e.type == "result"]
+        assert len(result_events) == 1
+        assert result_events[0].output_tokens == 573
+
+    async def test_single_step_output_tokens_is_that_step(self):
+        # Arrange — STEP_FINISH_STOP_EVENT carries tokens.output == 223.
+        adapter = OpenCodeAdapter()
+        ndjson = [STEP_START_EVENT, TEXT_EVENT, STEP_FINISH_STOP_EVENT]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        events: list[StreamEvent] = []
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+            async for event in adapter.stream(cwd="/tmp", prompt="test"):
+                events.append(event)
+
+        # Assert
+        result_events = [e for e in events if e.type == "result"]
+        assert len(result_events) == 1
+        assert result_events[0].output_tokens == 223
 
 
 class TestDisallowedTools:

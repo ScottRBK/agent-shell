@@ -55,6 +55,9 @@ classDiagram
     class AgentResponse {
         +str response
         +float cost
+        +str session_id
+        +float duration
+        +int output_tokens
     }
 
     class StreamEvent {
@@ -62,6 +65,8 @@ classDiagram
         +str content
         +float cost
         +float duration
+        +str session_id
+        +int output_tokens
     }
 
     class AgentType {
@@ -84,6 +89,8 @@ classDiagram
 ```
 
 The adapter pattern uses Python's `Protocol` (structural typing) rather than ABC, so adapters satisfy the contract implicitly without inheritance. Each adapter manages its own subprocess lifecycle, translating agent-specific CLI flags and NDJSON output into the shared `StreamEvent`/`AgentResponse` models.
+
+`output_tokens` is a cost measure — the billed output-token count, which **includes reasoning tokens** (billed at the output rate). Each adapter normalises this so the value is consistent across agents (e.g. OpenCode reports reasoning in a sibling field, so its adapter adds it back).
 
 ## Supported Agents
 

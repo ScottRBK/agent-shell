@@ -11,6 +11,7 @@ from tests.unit.opencode_fixtures import (
     TOOL_USE_EVENT,
     STEP_FINISH_STOP_EVENT,
     STEP_FINISH_TOOL_CALLS_EVENT,
+    make_step_finish,
 )
 
 
@@ -154,6 +155,55 @@ class TestExecuteIntegration:
         assert isinstance(response, AgentResponse)
         assert len(response.response) > 0, "Expected non-empty response text"
         assert response.cost == 0.05
+
+    async def test_execute_accumulates_output_tokens_across_steps(self):
+        # Arrange — full AgentShell -> adapter path: the deterministic CI counterpart to the
+        # OpenCode multi-step e2e guard. OpenCode output is per-step; a take-last bug would cap
+        # this at the final step (42) instead of summing 286 + 193 + 42.
+        shell = AgentShell(agent_type=AgentType.OPENCODE)
+        ndjson = [
+            STEP_START_EVENT,
+            TOOL_USE_EVENT,
+            make_step_finish(286, "tool-calls"),
+            STEP_START_EVENT,
+            TOOL_USE_EVENT,
+            make_step_finish(193, "tool-calls"),
+            STEP_START_EVENT,
+            TEXT_EVENT,
+            make_step_finish(42, "stop"),
+        ]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+            response = await shell.execute(cwd="/tmp", prompt="write two files, read them back")
+
+        # Assert
+        assert response.output_tokens == 521
+
+
+    async def test_execute_includes_reasoning_in_output_tokens(self):
+        # Arrange — cost-consistency guard through the full AgentShell -> adapter path. OpenCode
+        # excludes reasoning from tokens.output (reports it in the sibling tokens.reasoning), so
+        # the adapter must add it back to match the reasoning-inclusive Claude/Codex cost
+        # measure. 286+14 + 42+8 == 350.
+        shell = AgentShell(agent_type=AgentType.OPENCODE)
+        ndjson = [
+            STEP_START_EVENT,
+            TOOL_USE_EVENT,
+            make_step_finish(286, "tool-calls", reasoning=14),
+            STEP_START_EVENT,
+            TEXT_EVENT,
+            make_step_finish(42, "stop", reasoning=8),
+        ]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+            response = await shell.execute(cwd="/tmp", prompt="reason hard then answer")
+
+        # Assert
+        assert response.output_tokens == 350
 
 
 class TestSessionIntegration:
