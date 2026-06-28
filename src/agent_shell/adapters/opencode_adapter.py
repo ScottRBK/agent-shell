@@ -7,8 +7,9 @@ import warnings
 from pathlib import Path
 from typing import AsyncIterator
 
-from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, MCPServerType
+from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, MCPServerType, HealthCheckResult
 from agent_shell.process_cleanup import register_process_group, unregister_process_group
+from agent_shell.adapters.health import run_health_probe
 from agent_shell.adapters.tool_denial import resolve_disallowed_tools
 
 logger = logging.getLogger("agent_shell.opencode_adapter")
@@ -345,6 +346,14 @@ class OpenCodeAdapter():
             except ProcessLookupError:
                 pass
         self._active_processes.clear()
+
+    async def health_check(
+            self,
+            cwd: str,
+            model: str | None = None,
+            timeout: float = 60.0,
+    ) -> HealthCheckResult:
+        return await run_health_probe(self, cwd, model=model, timeout=timeout)
 
     def _config_path(self) -> Path:
         return Path(os.path.expanduser("~/.config/opencode/opencode.json"))

@@ -68,6 +68,14 @@ TURN_COMPLETED_EVENT = {
     },
 }
 
+# Codex reports run failure on stdout via turn.failed (the real reason lives here),
+# even though the process also exits non-zero with only "Reading additional input
+# from stdin..." on stderr. Captured from a bad-model run.
+TURN_FAILED_EVENT = {
+    "type": "turn.failed",
+    "error": {"message": "The 'bogus-model' model is not supported with your account."},
+}
+
 UNKNOWN_EVENT = {
     "type": "session.unknown_internal_event",
     "data": {"foo": "bar"},

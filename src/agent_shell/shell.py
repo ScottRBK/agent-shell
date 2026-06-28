@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 from typing import AsyncIterator
 
-from agent_shell.models.agent import AgentType, AgentResponse, StreamEvent, MCPServerSpec
+from agent_shell.models.agent import AgentType, AgentResponse, StreamEvent, MCPServerSpec, HealthCheckResult
 from agent_shell.adapters.agent_adapter_protocol import AgentAdapter
 from agent_shell.adapters.claude_code_adapter import ClaudeCodeAdapter
 from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
@@ -95,6 +95,18 @@ class AgentShell():
         except (KeyboardInterrupt, asyncio.CancelledError):
             await self._adapter.cancel()
             raise
+
+    async def health_check(
+            self,
+            cwd: str,
+            model: str | None = None,
+            timeout: float = 60.0,
+    ) -> HealthCheckResult:
+
+        if not Path(cwd).is_dir():
+            raise ValueError(f"Directory does not exist: {cwd}")
+
+        return await self._adapter.health_check(cwd=cwd, model=model, timeout=timeout)
 
     async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None:
         await self._adapter.add_mcp_server(mcp_server)

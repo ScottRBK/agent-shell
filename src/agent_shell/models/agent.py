@@ -31,6 +31,11 @@ class StreamEvent:
     output_tokens: int = 0
 
 @dataclass
+class HealthCheckResult:
+    healthy: bool
+    exception: str | None = None
+
+@dataclass
 class MCPServerSpec:
     name: str
     type: MCPServerType

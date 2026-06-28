@@ -6,8 +6,9 @@ import os
 import warnings
 from typing import AsyncIterator
 
-from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, MCPServerType
+from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, MCPServerType, HealthCheckResult
 from agent_shell.process_cleanup import register_process_group, unregister_process_group
+from agent_shell.adapters.health import run_health_probe
 
 logger = logging.getLogger("agent_shell.codex_adapter")
 
@@ -249,6 +250,14 @@ class CodexAdapter:
                 logger.info("Tool call: command_execution %s", command)
                 events.append(StreamEvent(type="tool_use", content=command))
 
+        elif t == "turn.failed":
+            # Codex surfaces the real failure reason here on stdout (bad model, usage limit,
+            # invalid request). The process also exits non-zero with only "Reading additional
+            # input from stdin..." on stderr, so without this the reason would be lost.
+            message = (event.get("error") or {}).get("message") or "turn failed"
+            logger.warning("Turn failed: %s", message)
+            events.append(StreamEvent(type="error", content=message))
+
         elif t == "turn.completed":
             # One turn.completed per `codex exec`, so its usage is the whole-run total. Codex
             # mirrors the OpenAI Responses API where usage.output_tokens already INCLUDES
@@ -272,6 +281,14 @@ class CodexAdapter:
             except ProcessLookupError:
                 pass
         self._active_processes.clear()
+
+    async def health_check(
+            self,
+            cwd: str,
+            model: str | None = None,
+            timeout: float = 60.0,
+    ) -> HealthCheckResult:
+        return await run_health_probe(self, cwd, model=model, timeout=timeout)
 
     async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None:
         if mcp_server.type == MCPServerType.STDIO:

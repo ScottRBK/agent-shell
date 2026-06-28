@@ -1,5 +1,5 @@
 from typing import Protocol, AsyncIterator
-from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec
+from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, HealthCheckResult
 
 class AgentAdapter(Protocol):
     async def execute(
@@ -31,6 +31,14 @@ class AgentAdapter(Protocol):
         ...
 
     async def cancel(self) -> None:
+        ...
+
+    async def health_check(
+            self,
+            cwd: str,
+            model: str | None = None,
+            timeout: float = 60.0,
+    ) -> HealthCheckResult:
         ...
 
     async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None:

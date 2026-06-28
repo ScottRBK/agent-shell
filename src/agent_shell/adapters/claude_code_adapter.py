@@ -6,8 +6,9 @@ import logging
 import warnings
 from typing import AsyncIterator
 
-from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, MCPServerType
+from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, MCPServerType, HealthCheckResult
 from agent_shell.process_cleanup import register_process_group, unregister_process_group
+from agent_shell.adapters.health import run_health_probe
 from agent_shell.adapters.tool_denial import resolve_disallowed_tools
 
 logger = logging.getLogger("agent_shell.claude_code_adapter")
@@ -227,6 +228,14 @@ class ClaudeCodeAdapter():
             except ProcessLookupError:
                 pass
         self._active_processes.clear()
+
+    async def health_check(
+            self,
+            cwd: str,
+            model: str | None = None,
+            timeout: float = 60.0,
+    ) -> HealthCheckResult:
+        return await run_health_probe(self, cwd, model=model, timeout=timeout)
 
     async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None:
         # Pre-remove for overwrite semantics; ignore failure (server may not exist).
