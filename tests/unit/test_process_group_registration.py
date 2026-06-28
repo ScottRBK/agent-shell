@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from agent_shell.adapters.claude_code_adapter import ClaudeCodeAdapter
 from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
+from agent_shell.adapters.pi_adapter import PiAdapter
 from agent_shell.process_cleanup import _active_process_groups
 
 from tests.unit.fixtures import SYSTEM_EVENT, TEXT_EVENT, RESULT_EVENT_SUCCESS
@@ -11,6 +12,11 @@ from tests.unit.opencode_fixtures import (
     STEP_START_EVENT,
     TEXT_EVENT as OC_TEXT_EVENT,
     STEP_FINISH_STOP_EVENT,
+)
+from tests.unit.pi_fixtures import (
+    SESSION_EVENT as PI_SESSION_EVENT,
+    TEXT_END_UPDATE as PI_TEXT_END_UPDATE,
+    AGENT_END_TEXT_EVENT as PI_AGENT_END_EVENT,
 )
 
 MOCK_PID = 54321
@@ -128,6 +134,65 @@ class TestOpenCodeAdapterRegistration:
         # Arrange
         _active_process_groups.clear()
         adapter = OpenCodeAdapter()
+        mock_process = AsyncMock()
+        mock_process.pid = MOCK_PID
+        adapter._active_processes = [mock_process]
+        _active_process_groups.add(MOCK_PID)
+
+        # Act
+        with patch("os.getpgid", return_value=MOCK_PID), \
+             patch("os.killpg"):
+            await adapter.cancel()
+
+        # Assert
+        assert MOCK_PID not in _active_process_groups, \
+            "PGID should be unregistered after cancel()"
+
+
+class TestPiAdapterRegistration:
+    async def test_registers_pid_as_pgid_on_subprocess_creation(self):
+        # Arrange
+        _active_process_groups.clear()
+        adapter = PiAdapter()
+        ndjson = [PI_SESSION_EVENT, PI_TEXT_END_UPDATE, PI_AGENT_END_EVENT]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+            registered_during_stream = False
+            async for _ in adapter.stream(cwd="/tmp", prompt="test"):
+                if MOCK_PID in _active_process_groups:
+                    registered_during_stream = True
+
+        # Assert
+        assert registered_during_stream, "process.pid should be registered while stream is active"
+
+        # Cleanup
+        _active_process_groups.clear()
+
+    async def test_unregisters_pid_on_normal_completion(self):
+        # Arrange — guards against leaving a completed process in _active_processes, which
+        # would later let cancel() killpg a since-reused PID.
+        _active_process_groups.clear()
+        adapter = PiAdapter()
+        ndjson = [PI_SESSION_EVENT, PI_TEXT_END_UPDATE, PI_AGENT_END_EVENT]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+            async for _ in adapter.stream(cwd="/tmp", prompt="test"):
+                pass
+
+        # Assert
+        assert MOCK_PID not in _active_process_groups, \
+            "process.pid should be unregistered after normal completion"
+        assert adapter._active_processes == [], \
+            "completed process should be removed from _active_processes"
+
+    async def test_cancel_unregisters_pgid(self):
+        # Arrange
+        _active_process_groups.clear()
+        adapter = PiAdapter()
         mock_process = AsyncMock()
         mock_process.pid = MOCK_PID
         adapter._active_processes = [mock_process]

@@ -76,6 +76,7 @@ classDiagram
         GEMINI_CLI
         COPILOT_CLI
         CODEX
+        PI
     }
 
     AgentShell --> AgentAdapter : delegates to
@@ -97,8 +98,9 @@ The adapter pattern uses Python's `Protocol` (structural typing) rather than ABC
 - [x] Claude Code
 - [x] OpenCode
 - [x] Copilot CLI
+- [x] Codex
+- [x] Pi
 - [ ] Gemini CLI
-- [ ] Codex
 
 ## MCP Server Configuration
 
@@ -126,8 +128,9 @@ All adapters write to user-scope configuration:
 | Claude Code | `claude mcp add --scope user` subprocess | `~/.claude.json` (managed by CLI) |
 | OpenCode | direct JSON file write | `~/.config/opencode/opencode.json` |
 | Copilot CLI | direct JSON file write | `~/.copilot/mcp-config.json` |
+| Codex | `codex mcp add` subprocess | Codex config |
 
-Adds are idempotent (overwrite existing entries with the same name). Removes warn rather than raise when the named server is not found. `list_mcp_servers()` is not yet implemented for Claude Code.
+Adds are idempotent (overwrite existing entries with the same name). Removes warn rather than raise when the named server is not found. `list_mcp_servers()` is not yet implemented for Claude Code. MCP is not yet implemented for Pi — all three methods raise `NotImplementedError` (Pi manages capability via `pi install` extensions, which needs investigation before wiring up).
 
 ## Test Philosophy
 

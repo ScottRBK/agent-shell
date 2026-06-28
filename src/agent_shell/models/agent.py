@@ -7,6 +7,7 @@ class AgentType(StrEnum):
     GEMINI_CLI = "gemini_cli"
     COPILOT_CLI = "copilot_cli"
     CODEX = "codex"
+    PI = "pi"
 
 class MCPServerType(StrEnum):
     STDIO = "stdio"
