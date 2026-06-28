@@ -1,4 +1,5 @@
 import asyncio
+import codecs
 import json
 import logging
 import os
@@ -122,57 +123,73 @@ class OpenCodeAdapter():
         # setsid makes the child a session leader, so pgid == pid
         register_process_group(process.pid)
 
+        # Drain stderr concurrently with stdout. Reading it only after the stdout loop can
+        # deadlock: a child that fills its stderr pipe buffer (~64KB) mid-run blocks on that
+        # write, never closes stdout, and our stdout read() then waits forever.
+        stderr_task = asyncio.ensure_future(process.stderr.read())
+
+        # Incremental decoder so a multibyte char split across two reads is stitched back
+        # together instead of raising UnicodeDecodeError; "replace" keeps a truly truncated
+        # tail from aborting the run.
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
         buffer = ""
         # Per-run accumulator (local to this stream() call, never instance state, so counts
         # never leak between runs on a reused adapter). OpenCode reports billed output tokens
         # per step (output + the separately-reported reasoning); we sum every step_finish and
         # emit the total on the stop result event.
         run_output_tokens = 0
-        while True:
-            chunk = await process.stdout.read(65536)
-            if not chunk:
-                if buffer.strip():
-                    try:
-                        raw = json.loads(buffer)
-                        logger.debug("Raw event: %s", raw)
-                        run_output_tokens += self._step_output_tokens(raw)
-                        for event in self._parse_event(
-                            event=raw,
-                            include_thinking=include_thinking,
-                            run_output_tokens=run_output_tokens,
-                        ):
-                            yield event
-                    except json.JSONDecodeError:
-                        logger.warning("Skipping malformed JSON: %s", buffer[:200])
-                break
+        try:
+            while True:
+                chunk = await process.stdout.read(65536)
+                if not chunk:
+                    buffer += decoder.decode(b"", final=True)
+                    if buffer.strip():
+                        try:
+                            raw = json.loads(buffer)
+                            logger.debug("Raw event: %s", raw)
+                            run_output_tokens += self._step_output_tokens(raw)
+                            for event in self._parse_event(
+                                event=raw,
+                                include_thinking=include_thinking,
+                                run_output_tokens=run_output_tokens,
+                            ):
+                                yield event
+                        except json.JSONDecodeError:
+                            logger.warning("Skipping malformed JSON: %s", buffer[:200])
+                    break
 
-            buffer += chunk.decode("utf-8")
-            while "\n" in buffer:
-                line, buffer = buffer.split("\n", 1)
-                if line.strip():
-                    try:
-                        raw = json.loads(line)
-                        logger.debug("Raw event: %s", raw)
-                        run_output_tokens += self._step_output_tokens(raw)
-                        for event in self._parse_event(
-                            event=raw,
-                            include_thinking=include_thinking,
-                            run_output_tokens=run_output_tokens,
-                        ):
-                            yield event
-                    except json.JSONDecodeError:
-                        logger.warning("Skipping malformed JSON: %s", line[:200])
+                buffer += decoder.decode(chunk)
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    if line.strip():
+                        try:
+                            raw = json.loads(line)
+                            logger.debug("Raw event: %s", raw)
+                            run_output_tokens += self._step_output_tokens(raw)
+                            for event in self._parse_event(
+                                event=raw,
+                                include_thinking=include_thinking,
+                                run_output_tokens=run_output_tokens,
+                            ):
+                                yield event
+                        except json.JSONDecodeError:
+                            logger.warning("Skipping malformed JSON: %s", line[:200])
 
-        await process.wait()
-        if process in self._active_processes:
-            self._active_processes.remove(process)
-        unregister_process_group(process.pid)
+            await process.wait()
+            if process in self._active_processes:
+                self._active_processes.remove(process)
+            unregister_process_group(process.pid)
 
-        stderr = await process.stderr.read()
-        if stderr and process.returncode != 0:
-            error_msg = stderr.decode("utf-8")[-500:]
-            logger.warning("Process exited with code %d: %s", process.returncode, error_msg)
-            yield StreamEvent(type="error", content=error_msg)
+            stderr = await stderr_task
+            if stderr and process.returncode != 0:
+                error_msg = stderr.decode("utf-8", errors="replace")[-500:]
+                logger.warning("Process exited with code %d: %s", process.returncode, error_msg)
+                yield StreamEvent(type="error", content=error_msg)
+        finally:
+            # On early consumer close (GeneratorExit at a yield) or any error, the concurrent
+            # drain above is never awaited; cancel it so it is not left pending.
+            if not stderr_task.done():
+                stderr_task.cancel()
 
     def _build_subprocess_env(self, cwd: str, disallowed_tools: list[str] | None) -> dict[str, str]:
         """Build the child env: pin PWD to cwd and layer OPENCODE_PERMISSION denies.
