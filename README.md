@@ -186,6 +186,7 @@ Set to `DEBUG` for raw JSON events and full command arguments.
 - [x] OpenCode
 - [x] Copilot CLI
 - [x] Codex
+- [x] Pi Agent 
 
 
 
