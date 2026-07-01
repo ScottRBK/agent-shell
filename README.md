@@ -2,6 +2,25 @@
 Agent Shell is a light weight abstraction for executing a cli coding agent headlessly
 and returning the output that can be used programatically as a unified contract
 
+## Features
+
+- **One unified contract** — the same `execute` / `stream` / `health_check` API across every
+  agent; swap the backend without changing a line of consuming code.
+- **Five CLI agents** — Claude Code, OpenCode, Copilot CLI, Codex, and Pi behind a common
+  adapter protocol.
+- **Execute or stream** — get one `AgentResponse`, or async-iterate normalized `StreamEvent`s
+  with optional thinking/reasoning.
+- **Session resumption** — continue any conversation by passing back its `session_id`.
+- **Normalized cost & tokens** — consistent `cost` and `output_tokens` (reasoning included)
+  regardless of how each CLI reports them.
+- **Health checks** — confirm an agent + model combination actually works before you rely on
+  it, read from the event stream rather than unreliable exit codes.
+- **Portable tool control** — one canonical allow/deny vocabulary
+  (`bash, edit, read, web_search, web_fetch`) translated to each CLI's own tool names.
+- **Unified MCP management** — register, remove, and list MCP servers across agents through a
+  single API.
+- **Async & dependency-free** — pure `asyncio`, zero runtime dependencies, Python 3.12+.
+
 ## Installation
 
 ```bash
@@ -69,6 +88,21 @@ async for event in shell.stream(
         print(f"Session: {event.session_id}")
     else:
         print(f"[{event.type}] {event.content}")
+```
+
+### Health check
+
+Verify an agent + model combination actually works before relying on it. It sends a
+trivial prompt and reports whether a real response came back — catching bad model names,
+missing credentials, and billing/quota failures. Exit codes alone are unreliable (some
+CLIs exit 0 on failure), so the verdict is read from the normalized event stream.
+
+```python
+shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+
+result = await shell.health_check(cwd="/path/to/project", model="haiku")
+if not result.healthy:
+    print(f"unavailable: {result.exception}")
 ```
 
 ### Restricting tools (`disallowed_tools`)
@@ -179,15 +213,4 @@ logging.getLogger("agent_shell").addHandler(logging.StreamHandler())
 ```
 
 Set to `DEBUG` for raw JSON events and full command arguments.
-
-## Supported CLI Agents:
-
-- [x] Claude Code
-- [x] OpenCode
-- [x] Copilot CLI
-- [x] Codex
-- [x] Pi Agent 
-
-
-
 

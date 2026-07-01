@@ -10,6 +10,7 @@ classDiagram
         -AgentAdapter _adapter
         +execute(cwd, prompt, ...) AgentResponse
         +stream(cwd, prompt, ...) AsyncIterator~StreamEvent~
+        +health_check(cwd, model, timeout) HealthCheckResult
         +add_mcp_server(spec) None
         +remove_mcp_server(name) None
         +list_mcp_servers() list~MCPServerSpec~
@@ -20,6 +21,7 @@ classDiagram
         +execute(cwd, prompt, ...) AgentResponse
         +stream(cwd, prompt, ...) AsyncIterator~StreamEvent~
         +cancel() None
+        +health_check(cwd, model, timeout) HealthCheckResult
         +add_mcp_server(spec) None
         +remove_mcp_server(name) None
         +list_mcp_servers() list~MCPServerSpec~
@@ -60,6 +62,11 @@ classDiagram
         +int output_tokens
     }
 
+    class HealthCheckResult {
+        +bool healthy
+        +str exception
+    }
+
     class StreamEvent {
         +str type
         +str content
@@ -83,6 +90,7 @@ classDiagram
     AgentShell --> AgentType : resolves via
     ClaudeCodeAdapter ..|> AgentAdapter : satisfies
     AgentShell ..> AgentResponse : returns
+    AgentShell ..> HealthCheckResult : returns
     AgentShell ..> StreamEvent : yields
     AgentShell ..> MCPServerSpec : accepts/returns
     MCPServerSpec --> MCPServerType : typed by
@@ -92,6 +100,8 @@ classDiagram
 The adapter pattern uses Python's `Protocol` (structural typing) rather than ABC, so adapters satisfy the contract implicitly without inheritance. Each adapter manages its own subprocess lifecycle, translating agent-specific CLI flags and NDJSON output into the shared `StreamEvent`/`AgentResponse` models.
 
 `output_tokens` is a cost measure — the billed output-token count, which **includes reasoning tokens** (billed at the output rate). Each adapter normalises this so the value is consistent across agents (e.g. OpenCode reports reasoning in a sibling field, so its adapter adds it back).
+
+`health_check(cwd, model, timeout)` probes an agent + model combination with a trivial prompt and returns `HealthCheckResult(healthy, exception)`. The verdict is derived from the normalised event stream (healthy = a `result` event with no `error`), not exit codes — which are unreliable, since some CLIs exit 0 on failure. The shared logic lives once in `adapters/health.py`; each adapter delegates to it.
 
 ## Supported Agents
 
