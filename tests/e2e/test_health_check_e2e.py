@@ -20,7 +20,7 @@ VALID_MODEL = {
     AgentType.OPENCODE: "opencode/big-pickle",
     AgentType.CODEX: "gpt-5.4-mini",
     AgentType.COPILOT_CLI: None,
-    AgentType.PI: "qwen3.6-27b-8Q",
+    AgentType.PI: "openai-codex/gpt-5.4-mini",
 }
 
 BOGUS_MODEL = "definitely-not-a-real-model-xyz"

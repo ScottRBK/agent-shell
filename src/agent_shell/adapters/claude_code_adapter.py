@@ -4,6 +4,7 @@ import json
 import os
 import logging
 import warnings
+from pathlib import Path
 from typing import AsyncIterator
 
 from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, MCPServerType, HealthCheckResult
@@ -244,11 +245,14 @@ class ClaudeCodeAdapter():
             raise_on_error=False,
         )
 
-        cmd = ["claude", "mcp", "add", "--scope", "user", "--transport", mcp_server.type.value]
+        cmd = ["claude", "mcp", "add"]
 
         if mcp_server.type == MCPServerType.STDIO:
             for key, value in mcp_server.env.items():
                 cmd.extend(["-e", f"{key}={value}"])
+            # Claude's --env option is variadic. A following option terminates its
+            # values so it cannot consume the server name as another env value.
+            cmd.extend(["--scope", "user", "--transport", mcp_server.type.value])
             cmd.append(mcp_server.name)
             cmd.append("--")
             cmd.append(mcp_server.command)
@@ -256,6 +260,8 @@ class ClaudeCodeAdapter():
         else:
             for key, value in mcp_server.headers.items():
                 cmd.extend(["--header", f"{key}: {value}"])
+            # --header is variadic for the same reason as --env above.
+            cmd.extend(["--scope", "user", "--transport", mcp_server.type.value])
             cmd.append(mcp_server.name)
             cmd.append(mcp_server.url)
 
@@ -272,12 +278,70 @@ class ClaudeCodeAdapter():
             )
 
     async def list_mcp_servers(self) -> list[MCPServerSpec]:
-        # Claude Code's `claude mcp list` outputs a flat summary, not full specs.
-        # Reconstruction would require parsing per-server `claude mcp get` output
-        # or reading ~/.claude.json directly. Tracked separately.
-        raise NotImplementedError(
-            "list_mcp_servers is not yet implemented for Claude Code"
-        )
+        config_path = Path(os.path.expanduser("~/.claude.json"))
+        if not config_path.exists():
+            return []
+
+        config = json.loads(config_path.read_text())
+        servers = config.get("mcpServers", {})
+        if not isinstance(servers, dict):
+            warnings.warn(
+                "Skipping malformed Claude Code 'mcpServers': expected object, "
+                f"got {type(servers).__name__}",
+                UserWarning,
+                stacklevel=2,
+            )
+            return []
+
+        result: list[MCPServerSpec] = []
+        for name, entry in servers.items():
+            if not isinstance(entry, dict):
+                warnings.warn(
+                    f"Skipping malformed MCP entry '{name}': expected object, "
+                    f"got {type(entry).__name__}",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                continue
+
+            entry_type = entry.get("type")
+            if entry_type is None:
+                if entry.get("command"):
+                    entry_type = "stdio"
+                elif entry.get("url"):
+                    entry_type = "http"
+
+            try:
+                if entry_type == "stdio":
+                    result.append(MCPServerSpec(
+                        name=name,
+                        type=MCPServerType.STDIO,
+                        command=entry.get("command"),
+                        args=list(entry.get("args") or []),
+                        env=dict(entry.get("env") or {}),
+                    ))
+                elif entry_type in {"http", "sse"}:
+                    result.append(MCPServerSpec(
+                        name=name,
+                        type=MCPServerType.HTTP,
+                        url=entry.get("url"),
+                        headers=dict(entry.get("headers") or {}),
+                    ))
+                else:
+                    warnings.warn(
+                        f"Skipping MCP entry '{name}': unsupported transport type "
+                        f"{entry_type!r}",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+            except (TypeError, ValueError) as e:
+                warnings.warn(
+                    f"Skipping malformed MCP entry '{name}': {e}",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+        return result
 
     async def _run_mcp_command(self, cmd: list[str], raise_on_error: bool) -> dict:
         logger.debug("MCP command: %s", cmd)
@@ -299,7 +363,5 @@ class ClaudeCodeAdapter():
         return {"returncode": process.returncode, "stdout": stdout_text, "stderr": stderr_text}
 
                 
-
-
 
 

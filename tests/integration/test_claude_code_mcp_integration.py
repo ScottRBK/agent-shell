@@ -1,8 +1,16 @@
+import json
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from agent_shell.adapters.claude_code_adapter import ClaudeCodeAdapter
 from agent_shell.models.agent import MCPServerSpec, MCPServerType
+
+
+@pytest.fixture
+def isolated_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    return tmp_path
 
 
 def _make_mock_process(returncode: int = 0, stdout: bytes = b"", stderr: bytes = b""):
@@ -67,6 +75,7 @@ class TestAddMcpServerStdio:
         env_values = {cmd_args[i + 1] for i in e_indices}
         assert "FORGETFUL_API_KEY=secret" in env_values
         assert "FORGETFUL_URL=http://x" in env_values
+        assert max(i + 1 for i in e_indices) < cmd_args.index("--scope")
 
     async def test_raises_on_subprocess_failure(self):
         # Arrange
@@ -125,6 +134,7 @@ class TestAddMcpServerHttp:
         header_values = {cmd_args[i + 1] for i in h_indices}
         assert "Authorization: Bearer abc" in header_values
         assert "X-Trace: 1" in header_values
+        assert max(i + 1 for i in h_indices) < cmd_args.index("--scope")
 
 
 class TestRemoveMcpServer:
@@ -160,13 +170,113 @@ class TestRemoveMcpServer:
 
 
 class TestListMcpServers:
-    async def test_raises_not_implemented(self):
+    async def test_returns_empty_when_config_is_missing(self, isolated_home):
         # Arrange
         adapter = ClaudeCodeAdapter()
 
-        # Act / Assert
-        with pytest.raises(NotImplementedError):
-            await adapter.list_mcp_servers()
+        # Act
+        servers = await adapter.list_mcp_servers()
+
+        # Assert
+        assert servers == []
+
+    async def test_reads_stdio_and_http_servers_from_user_config(self, isolated_home):
+        # Arrange
+        config_path = isolated_home / ".claude.json"
+        config_path.write_text(json.dumps({
+            "theme": "dark",
+            "mcpServers": {
+                "forgetful": {
+                    "type": "stdio",
+                    "command": "uvx",
+                    "args": ["forgetful-ai"],
+                    "env": {"FORGETFUL_URL": "http://localhost:8020"},
+                },
+                "remote": {
+                    "type": "http",
+                    "url": "https://example.com/mcp",
+                    "headers": {"Authorization": "Bearer test"},
+                },
+            },
+        }))
+        adapter = ClaudeCodeAdapter()
+
+        # Act
+        servers = await adapter.list_mcp_servers()
+
+        # Assert
+        assert servers == [
+            MCPServerSpec(
+                name="forgetful",
+                type=MCPServerType.STDIO,
+                command="uvx",
+                args=["forgetful-ai"],
+                env={"FORGETFUL_URL": "http://localhost:8020"},
+            ),
+            MCPServerSpec(
+                name="remote",
+                type=MCPServerType.HTTP,
+                url="https://example.com/mcp",
+                headers={"Authorization": "Bearer test"},
+            ),
+        ]
+
+    async def test_infers_legacy_entry_type(self, isolated_home):
+        # Arrange
+        config_path = isolated_home / ".claude.json"
+        config_path.write_text(json.dumps({
+            "mcpServers": {
+                "legacy-stdio": {"command": "uvx", "args": ["server"]},
+                "legacy-http": {"url": "https://example.com/mcp"},
+            },
+        }))
+        adapter = ClaudeCodeAdapter()
+
+        # Act
+        servers = await adapter.list_mcp_servers()
+
+        # Assert
+        assert [server.type for server in servers] == [
+            MCPServerType.STDIO,
+            MCPServerType.HTTP,
+        ]
+
+    async def test_skips_malformed_entries_without_hiding_valid_ones(self, isolated_home):
+        # Arrange
+        config_path = isolated_home / ".claude.json"
+        config_path.write_text(json.dumps({
+            "mcpServers": {
+                "not-an-object": "broken",
+                "missing-command": {"type": "stdio", "args": []},
+                "unsupported": {"type": "websocket", "url": "wss://example.com"},
+                "good": {"type": "stdio", "command": "uvx"},
+            },
+        }))
+        adapter = ClaudeCodeAdapter()
+
+        # Act
+        with pytest.warns(UserWarning) as caught:
+            servers = await adapter.list_mcp_servers()
+
+        # Assert
+        assert [server.name for server in servers] == ["good"]
+        warning_text = " ".join(str(item.message) for item in caught)
+        assert "not-an-object" in warning_text
+        assert "missing-command" in warning_text
+        assert "unsupported" in warning_text
+
+    async def test_warns_and_returns_empty_for_malformed_server_collection(self, isolated_home):
+        # Arrange
+        config_path = isolated_home / ".claude.json"
+        config_path.write_text(json.dumps({"mcpServers": ["broken"]}))
+        adapter = ClaudeCodeAdapter()
+
+        # Act
+        with pytest.warns(UserWarning, match="mcpServers"):
+            servers = await adapter.list_mcp_servers()
+
+        # Assert
+        assert servers == []
 
 
 class TestOverwriteSemantics:

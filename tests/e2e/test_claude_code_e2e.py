@@ -1,10 +1,41 @@
+from uuid import uuid4
+
 import pytest
 
 from agent_shell.shell import AgentShell
-from agent_shell.models.agent import AgentType, AgentResponse, StreamEvent
+from agent_shell.models.agent import (
+    AgentType,
+    AgentResponse,
+    MCPServerSpec,
+    MCPServerType,
+    StreamEvent,
+)
 
 
 pytestmark = pytest.mark.e2e
+
+
+class TestMcpConfigurationE2E:
+    async def test_list_mcp_servers_round_trips_user_scope_stdio_config(self):
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+        expected = MCPServerSpec(
+            name=f"agent-shell-e2e-list-{uuid4().hex}",
+            type=MCPServerType.STDIO,
+            command="python",
+            args=["-m", "agent_shell_e2e_server"],
+            env={"AGENT_SHELL_E2E": "true"},
+        )
+        await shell.add_mcp_server(expected)
+
+        try:
+            # Act
+            servers = await shell.list_mcp_servers()
+
+            # Assert
+            assert expected in servers
+        finally:
+            await shell.remove_mcp_server(expected.name)
 
 
 class TestStreamE2E:

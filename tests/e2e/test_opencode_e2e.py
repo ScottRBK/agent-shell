@@ -6,6 +6,8 @@ from agent_shell.models.agent import AgentType, AgentResponse, StreamEvent
 
 pytestmark = pytest.mark.e2e
 
+MODEL = "opencode/big-pickle"
+
 
 class TestStreamE2E:
     async def test_stream_yields_text_and_result_events(self):
@@ -18,6 +20,7 @@ class TestStreamE2E:
             cwd="/tmp",
             prompt="Respond with exactly: hello world",
             allowed_tools=[],
+            model=MODEL,
         ):
             events.append(event)
 
@@ -37,6 +40,7 @@ class TestStreamE2E:
         async for event in shell.stream(
             cwd="/tmp",
             prompt="Use the bash tool to run: echo 'tool test'",
+            model=MODEL,
         ):
             events.append(event)
 
@@ -55,6 +59,7 @@ class TestExecuteE2E:
             cwd="/tmp",
             prompt="Respond with exactly: hello world",
             allowed_tools=[],
+            model=MODEL,
         )
 
         # Assert
@@ -73,6 +78,7 @@ class TestSessionE2E:
             cwd="/tmp",
             prompt="Respond with exactly: hello",
             allowed_tools=[],
+            model=MODEL,
         ):
             events.append(event)
 
@@ -91,6 +97,7 @@ class TestSessionE2E:
             cwd="/tmp",
             prompt="Respond with exactly: hello",
             allowed_tools=[],
+            model=MODEL,
         )
 
         # Assert
@@ -104,21 +111,23 @@ class TestSessionE2E:
 
         first_response = await shell.execute(
             cwd="/tmp",
-            prompt="Remember the word 'banana'",
+            prompt="The session verification token is ORCHID-742. Reply exactly: acknowledged",
             allowed_tools=[],
+            model=MODEL,
         )
 
         # Act
         second_response = await shell.execute(
             cwd="/tmp",
-            prompt="What word did I ask you to remember?",
+            prompt="Reply with only the session verification token from my previous message.",
             allowed_tools=[],
+            model=MODEL,
             session_id=first_response.session_id,
         )
 
         # Assert
         assert isinstance(second_response, AgentResponse)
-        assert len(second_response.response) > 0
+        assert second_response.response.strip() == "ORCHID-742"
 
 
 class TestDisallowedToolsE2E:
@@ -142,6 +151,7 @@ class TestDisallowedToolsE2E:
                 "Actually execute it as a tool call; do not just describe it."
             ),
             disallowed_tools=["bash"],
+            model=MODEL,
         ):
             pass
 
@@ -164,6 +174,7 @@ class TestOutputTokensE2E:
             cwd="/tmp",
             prompt="Write a short paragraph about the sea.",
             allowed_tools=[],
+            model=MODEL,
         )
 
         # Assert
@@ -186,6 +197,7 @@ class TestOutputTokensE2E:
                 "Create one.txt containing 'alpha', create two.txt containing 'beta', "
                 "read both back, then tell me the two words."
             ),
+            model=MODEL,
         )
 
         # Assert — loose plausibility floor: a take-last regression would cap this at the final

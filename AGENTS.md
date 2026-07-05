@@ -34,7 +34,7 @@ classDiagram
         +cancel() None
         +add_mcp_server(spec) None
         +remove_mcp_server(name) None
-        +list_mcp_servers() NotImplementedError
+        +list_mcp_servers() list~MCPServerSpec~
         -_parse_event(event, include_thinking) list~StreamEvent~
     }
 
@@ -140,7 +140,7 @@ All adapters write to user-scope configuration:
 | Copilot CLI | direct JSON file write | `~/.copilot/mcp-config.json` |
 | Codex | `codex mcp add` subprocess | Codex config |
 
-Adds are idempotent (overwrite existing entries with the same name). Removes warn rather than raise when the named server is not found. `list_mcp_servers()` is not yet implemented for Claude Code. MCP is not yet implemented for Pi — all three methods raise `NotImplementedError` (Pi manages capability via `pi install` extensions, which needs investigation before wiring up).
+Adds are idempotent (overwrite existing entries with the same name). Removes warn rather than raise when the named server is not found. Claude Code listing reads the user-scope `mcpServers` entries from `~/.claude.json` directly, avoiding the health checks and human-readable output of `claude mcp list`. MCP is not yet implemented for Pi — all three methods raise `NotImplementedError` (Pi manages capability via `pi install` extensions, which needs investigation before wiring up).
 
 ## Test Philosophy
 

@@ -199,7 +199,7 @@ await shell.add_mcp_server(MCPServerSpec(
 ))
 ```
 
-`add_mcp_server` overwrites an existing server with the same name. `remove_mcp_server` warns rather than raises when the named server is not found. `list_mcp_servers()` works for OpenCode and Copilot CLI; for Claude Code it currently raises `NotImplementedError`.
+`add_mcp_server` overwrites an existing server with the same name. `remove_mcp_server` warns rather than raises when the named server is not found. `list_mcp_servers()` works for Claude Code, OpenCode, Copilot CLI, and Codex. Claude Code reads user-scope entries directly from `~/.claude.json`, so listing does not launch configured servers for health checks.
 
 ## Logging
 
@@ -213,4 +213,3 @@ logging.getLogger("agent_shell").addHandler(logging.StreamHandler())
 ```
 
 Set to `DEBUG` for raw JSON events and full command arguments.
-
