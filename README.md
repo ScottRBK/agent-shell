@@ -158,7 +158,12 @@ follow_up = await shell.execute(
 )
 ```
 
-> **Note:** OpenCode's `run` mode auto-approves all tools. The `allowed_tools` and `effort` parameters are configured via `opencode.json`, not CLI flags.
+> **Note:** For OpenCode, `allowed_tools` and `effort` are **ignored** — the adapter maps
+> neither to a CLI flag nor to `opencode.json`. To restrict an OpenCode agent, use
+> `disallowed_tools` (see [Restricting tools](#restricting-tools-disallowed_tools)): it is
+> enforced via a per-run `OPENCODE_PERMISSION` environment variable and holds even under
+> auto-approve. Keep `auto_approve=True` (the default) — with `auto_approve=False`,
+> `opencode run` auto-*rejects* permission prompts non-interactively and can silently abort the run.
 
 ## MCP Servers
 
