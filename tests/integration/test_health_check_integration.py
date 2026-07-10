@@ -183,6 +183,36 @@ class TestUnhealthyCombinations:
         assert result.healthy is False
         assert "not found" in result.exception
 
+    async def test_cursor_bad_model_name_stderr_is_unhealthy(self):
+        # Arrange — unknown model: cursor-agent exits 1 with the reason on stderr and empty
+        # stdout (no result event). Captured live; the real stderr is ~4.4KB — the reason
+        # ("Cannot use this model: <name>") sits at the FRONT, followed by the full model
+        # list. Unlike pi (short stderr), Cursor's reason is dropped by the shared
+        # `stderr[-500:]` tail-keep, so we assert only the reliable contract here (unhealthy
+        # + a surfaced exception); recovering the front-of-stderr reason is tracked as
+        # shared-transport hardening.
+        shell = AgentShell(agent_type=AgentType.CURSOR)
+        mock_process = _make_mock_process(
+            [],
+            returncode=1,
+            stderr=(
+                b"Cannot use this model: bogus. Available models: auto, gpt-5.6-terra-high, "
+                b"gpt-5.6-sol-high, gpt-5.6-luna-high, claude-opus-4-8-high, "
+                b"claude-sonnet-5-high, claude-fable-5-high, gpt-5.5-high, gpt-5.4-high, "
+                b"gpt-5.2-high, gpt-5.1-high, grok-4.5-high, composer-2.5, gemini-3.1-pro, "
+                b"claude-4-sonnet, claude-opus-4-7-high, kimi-k2.7-code, glm-5.2-high, "
+                b"gpt-5.4-mini-high, gpt-5.4-nano-high"
+            ),
+        )
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+            result = await shell.health_check(cwd="/tmp", model="bogus")
+
+        # Assert
+        assert result.healthy is False
+        assert result.exception is not None
+
 
 class TestHealthCheckValidation:
     async def test_rejects_missing_cwd(self):

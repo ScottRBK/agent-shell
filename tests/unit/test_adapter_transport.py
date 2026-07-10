@@ -1,6 +1,6 @@
 """Transport-level regression tests shared across every adapter.
 
-All five adapters share the same subprocess streaming boilerplate: a
+All six adapters share the same subprocess streaming boilerplate: a
 `while True: chunk = await process.stdout.read(65536)` loop that decodes and
 splits NDJSON, followed by a post-loop stderr read. Two latent bugs live in
 that shared block, so they are guarded here ONCE, parametrized across all

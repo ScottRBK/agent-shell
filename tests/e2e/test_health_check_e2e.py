@@ -21,7 +21,7 @@ VALID_MODEL = {
     AgentType.CODEX: "gpt-5.4-mini",
     AgentType.COPILOT_CLI: None,
     AgentType.PI: "openai-codex/gpt-5.4-mini",
-    AgentType.CURSOR: None,  
+    AgentType.CURSOR: None,
 }
 
 BOGUS_MODEL = "definitely-not-a-real-model-xyz"
