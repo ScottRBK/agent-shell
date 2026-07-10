@@ -24,6 +24,7 @@ from tests.unit import opencode_fixtures as oc_fx
 from tests.unit import codex_fixtures as cx_fx
 from tests.unit import copilot_fixtures as cp_fx
 from tests.unit import pi_fixtures as pi_fx
+from tests.unit import cursor_fixtures as cursor_fx
 
 
 def _make_mock_process(ndjson_lines: list[dict], returncode: int = 0, stderr: bytes = b""):
@@ -52,6 +53,8 @@ HAPPY = {
                       cx_fx.TURN_COMPLETED_EVENT],
     AgentType.COPILOT_CLI: [cp_fx.MESSAGE_EVENT_NO_TOOLS, cp_fx.RESULT_EVENT_SUCCESS],
     AgentType.PI: [pi_fx.SESSION_EVENT, pi_fx.TEXT_END_UPDATE, pi_fx.AGENT_END_TEXT_EVENT],
+    AgentType.CURSOR: [cursor_fx.SYSTEM_INIT_EVENT, cursor_fx.ASSISTANT_TEXT_EVENT,
+                       cursor_fx.RESULT_SUCCESS_EVENT],
 }
 
 

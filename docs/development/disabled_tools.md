@@ -5,6 +5,16 @@
 > Parameter name in code: **`disallowed_tools: list[str] | None = None`** (this file is
 > named `disabled_tools.md` per request; the canonical identifier is `disallowed_tools`).
 
+> **Later adapters (this plan predates them).** Two more adapters were added after this
+> document and follow the same fail-loud model:
+> - **Pi** (2026-06-27): uses `resolve_disallowed_tools` with `bash`/`edit`(→`edit,write`)/`read`
+>   mapped to `--exclude-tools`; `web_search`/`web_fetch` are unenforceable and **warn** (Pi
+>   ships no web tool). See `pi_adapter.py`.
+> - **Cursor** (2026-07-10): has **no** per-call deny mechanism at all (tool policy lives in
+>   `.cursor/cli.json`), so it does **not** use `resolve_disallowed_tools` — like Codex — and
+>   **every** requested deny warns and is ignored. Its `allowed_tools` and `effort` are likewise
+>   unsupported (warn-once); `include_thinking` is honoured. See `cursor_adapter.py`.
+
 ## 1. Goal
 
 Let a caller pass a deny-list of tools to `AgentShell` and have each adapter prevent the

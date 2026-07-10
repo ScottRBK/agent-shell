@@ -9,6 +9,7 @@ from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
 from agent_shell.adapters.copilot_cli_adapter import CopilotCLIAdapter
 from agent_shell.adapters.codex_adapter import CodexAdapter
 from agent_shell.adapters.pi_adapter import PiAdapter
+from agent_shell.adapters.cursor_adapter import CursorAdapter
 
 
 class AgentShell():
@@ -22,6 +23,7 @@ class AgentShell():
                 AgentType.COPILOT_CLI: CopilotCLIAdapter,
                 AgentType.CODEX: CodexAdapter,
                 AgentType.PI: PiAdapter,
+                AgentType.CURSOR: CursorAdapter,
         }
         
         adapter_cls = adapters.get(agent_type)

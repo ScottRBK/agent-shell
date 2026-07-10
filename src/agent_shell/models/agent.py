@@ -8,6 +8,7 @@ class AgentType(StrEnum):
     COPILOT_CLI = "copilot_cli"
     CODEX = "codex"
     PI = "pi"
+    CURSOR = "cursor"
 
 class MCPServerType(StrEnum):
     STDIO = "stdio"

@@ -24,6 +24,7 @@ from agent_shell.adapters.codex_adapter import CodexAdapter
 from agent_shell.adapters.copilot_cli_adapter import CopilotCLIAdapter
 from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
 from agent_shell.adapters.pi_adapter import PiAdapter
+from agent_shell.adapters.cursor_adapter import CursorAdapter
 
 
 # Per-adapter builder for the one NDJSON event that carries assistant text, so a
@@ -50,12 +51,18 @@ def _pi_text(text: str) -> dict:
             "assistantMessageEvent": {"type": "text_end", "contentIndex": 1, "content": text}}
 
 
+def _cursor_text(text: str) -> dict:
+    return {"type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}
+
+
 ADAPTERS = [
     pytest.param(ClaudeCodeAdapter, _claude_text, id="claude"),
     pytest.param(CodexAdapter, _codex_text, id="codex"),
     pytest.param(OpenCodeAdapter, _opencode_text, id="opencode"),
     pytest.param(CopilotCLIAdapter, _copilot_text, id="copilot"),
     pytest.param(PiAdapter, _pi_text, id="pi"),
+    pytest.param(CursorAdapter, _cursor_text, id="cursor"),
 ]
 
 

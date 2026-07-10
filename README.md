@@ -6,8 +6,8 @@ and returning the output that can be used programatically as a unified contract
 
 - **One unified contract** — the same `execute` / `stream` / `health_check` API across every
   agent; swap the backend without changing a line of consuming code.
-- **Five CLI agents** — Claude Code, OpenCode, Copilot CLI, Codex, and Pi behind a common
-  adapter protocol.
+- **Six CLI agents** — Claude Code, OpenCode, Copilot CLI, Codex, Pi, and Cursor behind a
+  common adapter protocol.
 - **Execute or stream** — get one `AgentResponse`, or async-iterate normalized `StreamEvent`s
   with optional thinking/reasoning.
 - **Session resumption** — continue any conversation by passing back its `session_id`.
@@ -128,7 +128,8 @@ response = await shell.execute(
 - Where a backend cannot enforce a deny, the adapter emits a `UserWarning` listing the
   ignored tools rather than failing silently. Coverage varies: Claude and OpenCode enforce
   all five canonical names; Copilot enforces only `bash`/`edit` canonically (use a verbatim
-  name for its other tools); Codex can only deny `web_search`.
+  name for its other tools); Codex can only deny `web_search`; Cursor cannot enforce any
+  per-call deny (its tool policy lives in `.cursor/cli.json`).
 - Denying `edit` or `read` is **best-effort**: a model can still modify or read files through
   the shell, so also deny `bash` when you need a hard file boundary.
 
@@ -164,6 +165,32 @@ follow_up = await shell.execute(
 > enforced via a per-run `OPENCODE_PERMISSION` environment variable and holds even under
 > auto-approve. Keep `auto_approve=True` (the default) — with `auto_approve=False`,
 > `opencode run` auto-*rejects* permission prompts non-interactively and can silently abort the run.
+
+### Cursor
+
+```python
+from agent_shell.shell import AgentShell
+from agent_shell.models.agent import AgentType
+
+shell = AgentShell(agent_type=AgentType.CURSOR)
+
+response = await shell.execute(
+    cwd="/path/to/project",
+    prompt="Can you tell me about this project?",
+)
+
+print(response.response)
+print(f"Session: {response.session_id}")
+```
+
+> **Note:** Cursor runs headlessly via `cursor-agent --print --output-format stream-json` and
+> **requires** workspace trust, which the adapter always passes (`--trust`). With
+> `auto_approve=True` (the default) it also passes `--force` so tools auto-run; otherwise
+> tools are auto-*rejected* but the run still completes. `allowed_tools`, `effort`, and
+> `disallowed_tools` are **ignored** — Cursor exposes no per-call tool policy or effort flag
+> (tool policy lives in `.cursor/cli.json`), so each emits a `UserWarning`. On a Free plan
+> only `model=None`/`"auto"` works. MCP servers are declared in `.cursor/mcp.json`; the
+> `add`/`remove`/`list` MCP methods raise `NotImplementedError`.
 
 ## MCP Servers
 
@@ -204,7 +231,7 @@ await shell.add_mcp_server(MCPServerSpec(
 ))
 ```
 
-`add_mcp_server` overwrites an existing server with the same name. `remove_mcp_server` warns rather than raises when the named server is not found. `list_mcp_servers()` works for Claude Code, OpenCode, Copilot CLI, and Codex. Claude Code reads user-scope entries directly from `~/.claude.json`, so listing does not launch configured servers for health checks.
+`add_mcp_server` overwrites an existing server with the same name. `remove_mcp_server` warns rather than raises when the named server is not found. `list_mcp_servers()` works for Claude Code, OpenCode, Copilot CLI, and Codex. Claude Code reads user-scope entries directly from `~/.claude.json`, so listing does not launch configured servers for health checks. MCP is not supported for Pi or Cursor — neither CLI exposes an add/remove subcommand, so all three MCP methods raise `NotImplementedError`.
 
 ## Logging
 

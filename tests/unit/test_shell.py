@@ -7,6 +7,7 @@ from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
 from agent_shell.adapters.copilot_cli_adapter import CopilotCLIAdapter
 from agent_shell.adapters.codex_adapter import CodexAdapter
 from agent_shell.adapters.pi_adapter import PiAdapter
+from agent_shell.adapters.cursor_adapter import CursorAdapter
 
 
 class TestResolveAdapter:
@@ -44,6 +45,13 @@ class TestResolveAdapter:
 
         # Assert
         assert isinstance(shell._adapter, PiAdapter)
+
+    def test_resolves_cursor(self):
+        # Arrange / Act
+        shell = AgentShell(agent_type=AgentType.CURSOR)
+
+        # Assert
+        assert isinstance(shell._adapter, CursorAdapter)
 
     def test_raises_for_unsupported_agent(self):
         # Arrange / Act / Assert

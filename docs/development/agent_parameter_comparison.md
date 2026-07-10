@@ -1,7 +1,10 @@
 # Agent CLI Parameter Comparison
 
 Comparison of headless/non-interactive configuration across supported CLI coding agents.
-Last updated: 2026-06-16
+Last updated: 2026-07-10
+
+> The summary matrix below predates the Pi and Cursor adapters; see their per-agent detail
+> sections (and the `disallowed_tools` table) for those two.
 
 ## Summary Table
 
@@ -104,6 +107,31 @@ Last updated: 2026-06-16
 - **Server mode**: `opencode serve --port 4096` with `--attach` from `run`
 - **Config**: `opencode.json` at project or `~/.config/opencode/opencode.json`, `OPENCODE_CONFIG_CONTENT` env var
 
+## Cursor
+
+- **Headless mode**: `-p` / `--print` with `--output-format stream-json` (NDJSON)
+- **Model**: `--model` (e.g. `sonnet-4-thinking`, `gpt-5`); parameterized models take bracket
+  overrides, e.g. `claude-opus-4-8[context=1m,effort=high,fast=false]`. On a Free plan only
+  `auto` is available.
+- **Effort**: No standalone flag — only the model bracket-override above, which the adapter
+  does not inject, so `effort` is ignored and warns
+- **Allowed tools**: No per-call flag — tool policy lives in `.cursor/cli.json`, so
+  `allowed_tools` is ignored and warns
+- **Disallowed tools**: No per-call flag (same reason) — `disallowed_tools` is ignored and warns
+- **Workspace trust**: `--trust` is MANDATORY headlessly (an untrusted dir exits 1 with a
+  plain-text "Workspace Trust Required" on stderr and zero stdout); the adapter always passes it
+- **Auto-approve**: `-f` / `--force` (alias `--yolo`) auto-runs tools; without it tools
+  auto-*reject* but the run still completes (exit 0)
+- **Output format**: `--output-format text|json|stream-json` (only with `--print`);
+  `--stream-partial-output` duplicates text and is not used
+- **Working directory**: uses cwd, `--add-dir` for extra roots, `-w` / `--worktree` for isolation
+- **Session**: `--resume [chatId]` (the adapter uses the `--resume=<id>` form), `--continue`,
+  `create-chat`
+- **MCP**: `cursor-agent mcp` = login/list/list-tools/enable/disable only (no add/remove);
+  servers declared in `.cursor/mcp.json`
+- **Usage**: the terminal `result` event carries `usage.outputTokens` (undocumented but real)
+  and `duration_ms`; there is no cost field, so `cost` is `0.0`
+
 ## Unified Interface Recommendations
 
 Based on this comparison, the following parameters map across all agents:
@@ -133,6 +161,7 @@ through **verbatim** (e.g. `mcp__server__tool`, or a harness-specific name like 
 | Copilot CLI | repeated `--deny-tool` | only `bash`→`shell` and `edit`→`write` are canonically mapped (the CLI's confirmed permission names); `read`/`web_search`/`web_fetch` **warn** — Copilot has no web tools and silently ignores unknown deny names. Deny rules take precedence over `--allow-all-tools` |
 | OpenCode | `OPENCODE_PERMISSION` env var, process-scoped | merges over any inherited value (deny wins), fails closed on bad JSON; hard block before approval flow |
 | Codex | `-c web_search="disabled"` only | no name-based deny; web_search key verified on codex-cli 0.133.0 but version-fragile (upstream `web_search_mode`), guarded by an e2e test; every other canonical/verbatim name warns and is ignored |
+| Cursor | none (no per-call flag) | tool policy is config-file only (`.cursor/cli.json`); the adapter has no `canonical → native` map, so **every** deny (canonical or verbatim) warns and is ignored |
 
 When an adapter cannot honor a requested canonical deny it emits a `UserWarning` listing
 the ignored names rather than silently dropping the deny (fail-loud). A caller who knows a
