@@ -1,4 +1,4 @@
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 
 from agent_shell.adapters.claude_code_adapter import ClaudeCodeAdapter
 
@@ -12,11 +12,10 @@ class TestCancel:
         adapter._active_processes = [mock_process]
 
         # Act
-        with patch("os.getpgid", return_value=12345) as mock_getpgid, \
-             patch("os.killpg") as mock_killpg:
+        mock_kill = MagicMock()
+        with patch("agent_shell.adapters.claude_code_adapter.kill_process_group", mock_kill):
             await adapter.cancel()
 
         # Assert
-        mock_getpgid.assert_called_once_with(12345)
-        mock_killpg.assert_called_once_with(12345, 9)
+        mock_kill.assert_called_once_with(12345)
         assert len(adapter._active_processes) == 0

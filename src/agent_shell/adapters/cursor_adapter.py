@@ -7,7 +7,7 @@ import warnings
 from typing import AsyncIterator
 
 from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, HealthCheckResult
-from agent_shell.process_cleanup import register_process_group, unregister_process_group
+from agent_shell.process_cleanup import register_process_group, unregister_process_group, kill_process_group
 from agent_shell.adapters.health import run_health_probe
 from agent_shell.adapters.stderr_format import format_stderr
 
@@ -277,12 +277,7 @@ class CursorAdapter:
 
     async def cancel(self) -> None:
         for process in self._active_processes:
-            try:
-                pgid = os.getpgid(process.pid)
-                os.killpg(pgid, 9)
-                unregister_process_group(pgid)
-            except ProcessLookupError:
-                pass
+            kill_process_group(process.pid)
         self._active_processes.clear()
 
     async def health_check(

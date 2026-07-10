@@ -24,6 +24,23 @@ def unregister_process_group(pgid: int) -> None:
     _active_process_groups.discard(pgid)
 
 
+def kill_process_group(pid: int) -> None:
+    """Kill the process group led by pid and unregister it, unconditionally.
+
+    Unregisters by pid (matching register_process_group(process.pid) at spawn time)
+    rather than the getpgid()-derived pgid, and does so even when the process has
+    already exited (getpgid raises ProcessLookupError) — otherwise a process that
+    exits on its own right before cancel() runs leaves a stale registry entry.
+    """
+    try:
+        pgid = os.getpgid(pid)
+        os.killpg(pgid, 9)
+    except ProcessLookupError:
+        pass
+    finally:
+        unregister_process_group(pid)
+
+
 def cleanup_process_groups() -> None:
     """Kill all registered process groups. Called by atexit."""
     for pgid in list(_active_process_groups):
