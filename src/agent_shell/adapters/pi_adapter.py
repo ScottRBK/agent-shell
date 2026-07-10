@@ -9,6 +9,7 @@ from typing import AsyncIterator
 from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, HealthCheckResult
 from agent_shell.process_cleanup import register_process_group, unregister_process_group
 from agent_shell.adapters.health import run_health_probe
+from agent_shell.adapters.stderr_format import format_stderr
 from agent_shell.adapters.tool_denial import resolve_disallowed_tools
 
 logger = logging.getLogger("agent_shell.pi_adapter")
@@ -158,7 +159,7 @@ class PiAdapter:
 
             stderr = await stderr_task
             if stderr and process.returncode != 0:
-                error_msg = stderr.decode("utf-8", errors="replace")[-500:]
+                error_msg = format_stderr(stderr)
                 logger.warning("Process exited with code %d: %s", process.returncode, error_msg)
                 yield StreamEvent(type="error", content=error_msg)
         finally:

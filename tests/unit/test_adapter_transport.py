@@ -2,7 +2,7 @@
 
 All six adapters share the same subprocess streaming boilerplate: a
 `while True: chunk = await process.stdout.read(65536)` loop that decodes and
-splits NDJSON, followed by a post-loop stderr read. Two latent bugs live in
+splits NDJSON, followed by a post-loop stderr read. Three latent bugs live in
 that shared block, so they are guarded here ONCE, parametrized across all
 adapters, rather than copy-pasted into each per-adapter suite:
 
@@ -12,6 +12,10 @@ adapters, rather than copy-pasted into each per-adapter suite:
   2. stderr is read only AFTER stdout is fully drained, so a child that fills
      its stderr pipe buffer mid-run deadlocks (it blocks writing stderr, never
      closes stdout, and our stdout read() waits forever).
+  3. The error message built from stderr kept only the last 500 bytes, so a
+     CLI that puts its reason at the *front* of a long stderr (cursor-agent's
+     "Cannot use this model: <name>" followed by the full model list) had the
+     reason silently dropped.
 """
 import asyncio
 import json
@@ -164,6 +168,25 @@ async def test_invalid_utf8_on_stderr_error_path_survives(adapter_cls, text_even
     # Assert
     errors = [e for e in events if e.type == "error"]
     assert errors and "boom" in errors[0].content
+
+
+@pytest.mark.parametrize("adapter_cls,text_event", ADAPTERS)
+async def test_front_loaded_stderr_reason_survives_long_tail(adapter_cls, text_event):
+    # Arrange — reason at the very start of stderr, followed by ~4KB of noise, mirrors
+    # cursor-agent's "Cannot use this model: <name>" + full model list on a bad model.
+    # A tail-only truncation drops the reason entirely.
+    adapter = adapter_cls()
+    reason = "Cannot use this model: bogus."
+    stderr = (reason + " " + "x" * 4000).encode("utf-8")
+    process = _process_with_stdout([b""], stderr=stderr, returncode=1)
+
+    # Act
+    with patch("asyncio.create_subprocess_exec", return_value=process):
+        events = [event async for event in adapter.stream(cwd="/tmp", prompt="x")]
+
+    # Assert
+    errors = [e for e in events if e.type == "error"]
+    assert errors and reason in errors[0].content
 
 
 @pytest.mark.parametrize("adapter_cls,text_event", ADAPTERS)

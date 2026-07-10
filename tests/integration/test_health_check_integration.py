@@ -187,10 +187,8 @@ class TestUnhealthyCombinations:
         # Arrange — unknown model: cursor-agent exits 1 with the reason on stderr and empty
         # stdout (no result event). Captured live; the real stderr is ~4.4KB — the reason
         # ("Cannot use this model: <name>") sits at the FRONT, followed by the full model
-        # list. Unlike pi (short stderr), Cursor's reason is dropped by the shared
-        # `stderr[-500:]` tail-keep, so we assert only the reliable contract here (unhealthy
-        # + a surfaced exception); recovering the front-of-stderr reason is tracked as
-        # shared-transport hardening.
+        # list. Unlike pi (short stderr), a tail-only truncation would drop Cursor's reason;
+        # `format_stderr` keeps both ends so it survives.
         shell = AgentShell(agent_type=AgentType.CURSOR)
         mock_process = _make_mock_process(
             [],
@@ -211,7 +209,7 @@ class TestUnhealthyCombinations:
 
         # Assert
         assert result.healthy is False
-        assert result.exception is not None
+        assert "Cannot use this model: bogus" in result.exception
 
 
 class TestHealthCheckValidation:
