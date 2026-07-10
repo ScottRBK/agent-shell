@@ -34,7 +34,8 @@ def _make_mock_process(ndjson_lines: list[dict], returncode: int = 0, stderr: by
 
 class TestStream:
     async def test_yields_events_in_order(self):
-        # Arrange
+        # Arrange — the leading MESSAGE_DELTA_EVENT is a per-token delta and must be ignored
+        # (issue #6); the text event comes from MESSAGE_EVENT_NO_TOOLS's full `content`.
         adapter = CopilotCLIAdapter()
         ndjson = [MESSAGE_DELTA_EVENT, MESSAGE_EVENT_NO_TOOLS, RESULT_EVENT_SUCCESS]
         mock_process = _make_mock_process(ndjson)
@@ -48,7 +49,7 @@ class TestStream:
         # Assert
         assert len(events) == 2
         assert events[0].type == "text"
-        assert events[0].content == "HEL"
+        assert events[0].content == "HELLO_WORLD"
         assert events[1].type == "result"
 
     async def test_yields_error_event_on_nonzero_exit_with_stderr(self):
@@ -372,7 +373,7 @@ class TestStream:
     async def test_skips_malformed_json_lines(self):
         # Arrange
         adapter = CopilotCLIAdapter()
-        raw = json.dumps(MESSAGE_DELTA_EVENT) + "\n" + "not valid json\n" + json.dumps(RESULT_EVENT_SUCCESS) + "\n"
+        raw = json.dumps(MESSAGE_EVENT_NO_TOOLS) + "\n" + "not valid json\n" + json.dumps(RESULT_EVENT_SUCCESS) + "\n"
         chunks = [raw.encode("utf-8"), b""]
 
         mock_process = AsyncMock()
@@ -419,10 +420,11 @@ class TestStream:
 class TestOutputTokens:
     async def test_result_event_carries_accumulated_output_tokens(self):
         # Arrange — the single result StreamEvent must carry the summed per-message totals.
-        # MESSAGE_DELTA_EVENT yields a text event so D5 (intermediate events == 0) is testable.
+        # The leading zero-token message yields a text event so D5 (intermediate events == 0)
+        # is testable, without perturbing the summed total.
         adapter = CopilotCLIAdapter()
         ndjson = [
-            MESSAGE_DELTA_EVENT,
+            make_assistant_message(0, content="hi"),
             make_assistant_message(618),
             make_assistant_message(71),
             make_assistant_message(201),

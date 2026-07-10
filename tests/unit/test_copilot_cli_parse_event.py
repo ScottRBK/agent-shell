@@ -135,21 +135,22 @@ class TestParseEventReasoning:
 
 
 class TestParseEventMessageDelta:
-    def test_emits_text_from_delta(self):
-        # Arrange
+    def test_ignores_message_delta(self):
+        # Arrange — per-token deltas must NOT surface as "text" events: execute() newline-joins
+        # every "text" event, so token-granular deltas would explode the response into one
+        # token per line (issue #6). Full text is instead read off the block-level
+        # assistant.message event's `content` field.
         adapter = CopilotCLIAdapter()
 
         # Act
         events = adapter._parse_event(MESSAGE_DELTA_EVENT, include_thinking=False)
 
         # Assert
-        assert len(events) == 1
-        assert events[0].type == "text"
-        assert events[0].content == "HEL"
+        assert len(events) == 0
 
 
 class TestParseEventMessageNoTools:
-    def test_ignores_message_without_tool_requests(self):
+    def test_emits_text_from_message_content(self):
         # Arrange
         adapter = CopilotCLIAdapter()
 
@@ -157,11 +158,13 @@ class TestParseEventMessageNoTools:
         events = adapter._parse_event(MESSAGE_EVENT_NO_TOOLS, include_thinking=False)
 
         # Assert
-        assert len(events) == 0
+        assert len(events) == 1
+        assert events[0].type == "text"
+        assert events[0].content == "HELLO_WORLD"
 
 
 class TestParseEventMessageWithTools:
-    def test_emits_tool_use_for_each_request(self):
+    def test_emits_text_then_tool_use_for_each_request(self):
         # Arrange
         adapter = CopilotCLIAdapter()
 
@@ -169,11 +172,13 @@ class TestParseEventMessageWithTools:
         events = adapter._parse_event(MESSAGE_EVENT_WITH_TOOLS, include_thinking=False)
 
         # Assert
-        assert len(events) == 2
-        assert events[0].type == "tool_use"
-        assert events[0].content == "report_intent"
+        assert len(events) == 3
+        assert events[0].type == "text"
+        assert events[0].content == "I'll grab the first three regular files and save them."
         assert events[1].type == "tool_use"
-        assert events[1].content == "bash"
+        assert events[1].content == "report_intent"
+        assert events[2].type == "tool_use"
+        assert events[2].content == "bash"
 
 
 class TestParseEventToolExecution:

@@ -47,7 +47,7 @@ def _opencode_text(text: str) -> dict:
 
 
 def _copilot_text(text: str) -> dict:
-    return {"type": "assistant.message_delta", "data": {"deltaContent": text}}
+    return {"type": "assistant.message", "data": {"content": text, "toolRequests": []}}
 
 
 def _pi_text(text: str) -> dict:

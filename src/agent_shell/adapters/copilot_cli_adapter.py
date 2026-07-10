@@ -229,13 +229,16 @@ class CopilotCLIAdapter:
             if content:
                 events.append(StreamEvent(type="thinking", content=content))
 
-        elif t == "assistant.message_delta":
-            delta_content = event.get("data", {}).get("deltaContent", "")
-            if delta_content:
-                events.append(StreamEvent(type="text", content=delta_content))
-
         elif t == "assistant.message":
-            tool_requests = event.get("data", {}).get("toolRequests", [])
+            # Text is surfaced here on the full message `content`, not from
+            # assistant.message_delta's per-token deltaContent. deltaContent is meant to be
+            # concatenated directly (no separator); execute()'s "\n".join over "text" events
+            # would otherwise explode the response into one token per line (issue #6).
+            data = event.get("data", {})
+            content = data.get("content", "")
+            if content:
+                events.append(StreamEvent(type="text", content=content))
+            tool_requests = data.get("toolRequests", [])
             for tool in tool_requests:
                 tool_name = tool.get("name", "")
                 logger.info("Tool call: %s", tool_name)

@@ -11,6 +11,7 @@ from tests.unit.copilot_fixtures import (
     MESSAGE_DELTA_EVENT_2,
     MESSAGE_DELTA_EVENT_3,
     MESSAGE_EVENT_NO_TOOLS,
+    MESSAGE_EVENT_WITH_TOOLS,
     RESULT_EVENT_SUCCESS,
     make_assistant_message,
 )
@@ -34,7 +35,9 @@ def _make_mock_process(ndjson_lines: list[dict], returncode: int = 0, stderr: by
 
 class TestExecute:
     async def test_returns_response_with_text_and_session_id(self):
-        # Arrange
+        # Arrange — the three MESSAGE_DELTA_EVENTs are per-token deltas and must be ignored
+        # (issue #6: joining them with "\n" would explode the response one token per line).
+        # The full text instead comes from MESSAGE_EVENT_NO_TOOLS's `content` field.
         adapter = CopilotCLIAdapter()
         ndjson = [
             TURN_START_EVENT,
@@ -52,7 +55,7 @@ class TestExecute:
 
         # Assert
         assert isinstance(response, AgentResponse)
-        assert response.response == "HEL\nLO\n_WORLD"
+        assert response.response == "HELLO_WORLD"
         assert response.session_id == "01036873-9931-4e3e-b3cb-14793ae370f9"
 
     async def test_returns_response_with_empty_cost(self):
@@ -126,8 +129,27 @@ class TestExecute:
         assert first.output_tokens == 654
         assert second.output_tokens == 71
 
-    async def test_aggregates_text_from_multiple_deltas(self):
-        # Arrange
+    async def test_joins_text_from_two_complete_messages_with_newline(self):
+        # Arrange — two distinct assistant.message blocks (the first tool-bearing) in one turn.
+        # Unlike per-token deltas, whole-message blocks SHOULD be newline-joined: this locks
+        # down that boundary alongside the text/tool_use ordering within a single message.
+        adapter = CopilotCLIAdapter()
+        ndjson = [MESSAGE_EVENT_WITH_TOOLS, MESSAGE_EVENT_NO_TOOLS, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+            response = await adapter.execute(cwd="/tmp", prompt="test")
+
+        # Assert
+        assert response.response == (
+            "I'll grab the first three regular files and save them.\nHELLO_WORLD"
+        )
+
+    async def test_message_deltas_do_not_corrupt_response_text(self):
+        # Arrange — regression guard for issue #6: a Copilot delta stream like
+        # ["HEL", "LO", "_WORLD"] must NOT reconstruct as "HEL\nLO\n_WORLD" (one
+        # token per line). Deltas are ignored; the full message content wins.
         adapter = CopilotCLIAdapter()
         ndjson = [
             MESSAGE_DELTA_EVENT,
@@ -143,4 +165,5 @@ class TestExecute:
             response = await adapter.execute(cwd="/tmp", prompt="test")
 
         # Assert
-        assert response.response == "HEL\nLO\n_WORLD"
+        assert response.response == "HELLO_WORLD"
+        assert "\n" not in response.response
