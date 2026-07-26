@@ -48,6 +48,14 @@ CLI_NAME = {
 # instead of just sleeping. The kernel releases that lock when the last descriptor on it
 # closes, which for a SIGKILLed process is at exit, so a test can observe the grandchild's
 # death directly rather than inferring it from a pid that may have been recycled.
+#
+# The grandchild gets DEVNULL for all three streams rather than inheriting the child's pipes.
+# It stays in the process group the child created with setsid, which is the only thing these
+# tests are about, but it no longer holds the child's stdout and stderr open — and asyncio
+# resolves `Process.wait()` from `_call_connection_lost`, which `_try_finish` only reaches once
+# `all(p.disconnected ...)`. Inheriting the pipes therefore gated the child's `wait()` on the
+# grandchild's 60s lifetime, which is why awaiting the child used to be a trap. On DEVNULL it
+# is a 0ms reap barrier instead, and no test has to poll for the reap.
 _FAKE_CLI = '''#!/usr/bin/env python3
 import json, os, subprocess, sys, time
 spec = json.loads(os.environ["AGENTSHELL_FAKE_CLI"])
@@ -61,7 +69,8 @@ if spec.get("grandchild_pid_file"):
                 spec["grandchild_lock_file"]]
     else:
         argv = ["sleep", "60"]
-    grandchild = subprocess.Popen(argv)
+    grandchild = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     with open(spec["grandchild_pid_file"], "w") as f:
         f.write(str(grandchild.pid))
 for event in spec["stdout"]:
@@ -90,7 +99,29 @@ def fake_cli(tmp_path, monkeypatch):
     return set_script
 
 
-def _reaped(pid: int, timeout: float = 5.0) -> bool:
+# Both polling helpers below are async, and `await asyncio.sleep()` rather than `time.sleep()`
+# is the whole point of them being so: they are called from async tests, so a `time.sleep()` poll
+# would block the very event loop that has to make progress for the condition to come true.
+#
+# Reaping was the case that bit, and it is worth recording because nothing about the test looked
+# environment-dependent. asyncio picks its child watcher by capability, not by version:
+# `_UnixDefaultEventLoopPolicy._init_watcher()` installs PidfdChildWatcher when `os.pidfd_open`
+# exists and falls back to ThreadedChildWatcher when it does not, and the two reap in different
+# places. ThreadedChildWatcher runs `os.waitpid()` on a thread of its own, so it reaps whatever
+# the loop is doing. PidfdChildWatcher registers the pidfd with `loop._add_reader()` and runs
+# `os.waitpid()` from the reader callback, so it reaps only while the loop is turning. Under the
+# pidfd watcher a blocking poll therefore held the child at `/proc/<pid>/stat` state Z for the
+# full timeout, with `os.getpgid()` still succeeding and `returncode` still None, and no amount
+# of extra timeout would have helped. Reproduced: the same suite passed on a
+# python-build-standalone interpreter (no `os.pidfd_open`) and failed on every interpreter built
+# with pidfd support.
+#
+# The reap itself is now awaited directly rather than polled — see the barrier in
+# `test_cleanup_kills_the_grandchildren_of_an_already_reaped_child`. What is left below is the
+# waiting that genuinely has no barrier to await, because it is another process reaching a state
+# of its own. Keep it cooperative anyway: these run under whichever watcher the interpreter
+# picked, and a loop this test blocks is a loop that cannot deliver anything.
+async def _reaped(pid: int, timeout: float = 5.0) -> bool:
     """True once `pid` is gone from the process table, or is a zombie awaiting its reaper."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -101,17 +132,17 @@ def _reaped(pid: int, timeout: float = 5.0) -> bool:
             return True
         if state == "Z":
             return True
-        time.sleep(0.01)
+        await asyncio.sleep(0.01)
     return False
 
 
-def _wait_until(predicate, timeout: float = 5.0) -> bool:
+async def _wait_until(predicate, timeout: float = 5.0) -> bool:
     """True once `predicate` holds; False if it never does within `timeout`."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
             return True
-        time.sleep(0.01)
+        await asyncio.sleep(0.01)
     return False
 
 
@@ -196,7 +227,7 @@ async def test_abandoned_stream_really_kills_the_child_and_its_grandchild(
     # Assert
     await child.wait()
     assert child.returncode != 0, "abandoned child was not killed"
-    assert _reaped(grandchild_pid), "grandchild outlived the process group kill"
+    assert await _reaped(grandchild_pid), "grandchild outlived the process group kill"
     assert adapter._active_processes == []
     assert child.pid not in _active_process_groups
 
@@ -225,18 +256,27 @@ async def test_cleanup_kills_the_grandchildren_of_an_already_reaped_child(fake_c
     try:
         # The lock being held is the positive control: it proves the grandchild is alive and
         # that losing the lock later can only mean it died.
-        assert _wait_until(lambda: _lock_is_held(str(lock_file))), \
+        assert await _wait_until(lambda: _lock_is_held(str(lock_file))), \
             "grandchild never took the lock that marks it alive"
-        assert _wait_until(lambda: _pid_is_gone(child.pid)), "child was never reaped"
+
+        # A barrier, not a poll. Both watchers call os.waitpid() — the call that frees the pid —
+        # before scheduling the callback that resolves wait(), so once this returns the reap has
+        # happened and `_pid_is_gone` needs no polling at all. It is only sound because the
+        # grandchild is spawned on DEVNULL: asyncio resolves wait() from _call_connection_lost,
+        # which _try_finish reaches only once every pipe is disconnected, so a grandchild holding
+        # the child's stdout would gate wait() on ITS 60s lifetime instead of the child's.
+        # Bounded so that regression fails in seconds rather than hanging the run.
+        await asyncio.wait_for(child.wait(), timeout=5.0)
+        assert _pid_is_gone(child.pid), "child was never reaped"
         assert child.pid in _active_process_groups
 
         # Act
         cleanup_process_groups()
 
         # Assert
-        assert _wait_until(lambda: not _lock_is_held(str(lock_file))), \
+        assert await _wait_until(lambda: not _lock_is_held(str(lock_file))), \
             "grandchild outlived the cleanup: it is still holding its lock"
-        assert _reaped(grandchild_pid)
+        assert await _reaped(grandchild_pid)
         assert child.pid not in _active_process_groups
     finally:
         # Cleanup — the grandchild must never survive this test, however it ended.
