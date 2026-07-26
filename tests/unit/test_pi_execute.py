@@ -1,8 +1,10 @@
 import json
 from unittest.mock import AsyncMock, patch, MagicMock
 
+import pytest
+
 from agent_shell.adapters.pi_adapter import PiAdapter
-from agent_shell.models.agent import AgentResponse
+from agent_shell.models.agent import AgentExecutionError, AgentResponse
 
 from tests.unit.pi_fixtures import (
     SESSION_EVENT,
@@ -159,17 +161,23 @@ class TestExecuteTransportEdges:
         assert response.output_tokens == 27
         assert response.session_id == "019f0ae6-995e-780b-b2e7-f00d2d72873f"
 
-    async def test_no_agent_end_degrades_gracefully(self):
+    async def test_no_agent_end_raises_but_keeps_the_partial_run(self):
         # Arrange — a killed/truncated pi run emits text/session but no agent_end (no result).
+        # This used to return a success-shaped response; issue #11 makes it a failure, since a
+        # truncated run is not a run that answered. What it must NOT do is lose the partial
+        # output the caller already paid for, so that rides on the exception instead.
         adapter = PiAdapter()
         mock_process = _make_mock_process([SESSION_EVENT, TEXT_END_UPDATE])
 
         # Act
         with patch("asyncio.create_subprocess_exec", return_value=mock_process):
-            response = await adapter.execute(cwd="/tmp", prompt="ping")
+            with pytest.raises(AgentExecutionError) as excinfo:
+                await adapter.execute(cwd="/tmp", prompt="ping")
 
         # Assert — text + session_id still captured; cost/tokens fall back to zero.
-        assert response.response == "PONG"
-        assert response.cost == 0.0
-        assert response.output_tokens == 0
-        assert response.session_id == "019f0ae6-995e-780b-b2e7-f00d2d72873f"
+        error = excinfo.value
+        assert str(error) == "no result event received"
+        assert error.response == "PONG"
+        assert error.cost == 0.0
+        assert error.output_tokens == 0
+        assert error.session_id == "019f0ae6-995e-780b-b2e7-f00d2d72873f"

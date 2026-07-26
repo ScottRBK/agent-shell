@@ -7,8 +7,10 @@ import warnings
 from typing import AsyncIterator
 
 from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, HealthCheckResult
-from agent_shell.process_cleanup import register_process_group, unregister_process_group, kill_process_group
+from agent_shell.process_cleanup import (register_process_group, kill_process_group,
+                                         release_process)
 from agent_shell.adapters.health import run_health_probe
+from agent_shell.adapters.response import collect_response
 from agent_shell.adapters.stderr_format import format_stderr
 
 logger = logging.getLogger("agent_shell.cursor_adapter")
@@ -32,28 +34,17 @@ class CursorAdapter:
             session_id: str | None = None,
             disallowed_tools: list[str] | None = None,
     ) -> AgentResponse:
-        chunks: list[StreamEvent] = []
-        async for event in self.stream(
-            cwd=cwd,
-            prompt=prompt,
+        return await collect_response(
+            self,
+            cwd,
+            prompt,
             allowed_tools=allowed_tools,
-            disallowed_tools=disallowed_tools,
             model=model,
             effort=effort,
             include_thinking=include_thinking,
             auto_approve=auto_approve,
             session_id=session_id,
-        ):
-            chunks.append(event)
-
-        text = "\n".join(e.content for e in chunks if e.type == "text")
-        cost = next((e.cost for e in reversed(chunks) if e.type == "result"), 0.0)
-        duration = next((e.duration for e in reversed(chunks) if e.type == "result"), 0.0)
-        output_tokens = next((e.output_tokens for e in reversed(chunks) if e.type == "result"), 0)
-        returned_session_id = next((e.session_id for e in chunks if e.session_id), None)
-        return AgentResponse(
-            response=text, cost=cost, session_id=returned_session_id,
-            duration=duration, output_tokens=output_tokens,
+            disallowed_tools=disallowed_tools,
         )
 
     async def stream(
@@ -136,6 +127,9 @@ class CursorAdapter:
         # tail from aborting the run.
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         buffer = ""
+        # Which exit path stream() took, for the teardown in the `finally`. Only the normal
+        # path below sets it, so every other way out of this body counts as abandonment.
+        child_exited = False
         try:
             while True:
                 chunk = await process.stdout.read(65536)
@@ -163,10 +157,12 @@ class CursorAdapter:
                         except json.JSONDecodeError:
                             logger.warning("Skipping malformed JSON: %s", line[:200])
 
+            # stdout hit EOF, so the child has exited or is about to. Reap it here, then
+            # record that we did: the teardown must not re-derive this from
+            # process.returncode, which cannot tell "still running" from "already reaped and
+            # its pid handed to someone else".
             await process.wait()
-            if process in self._active_processes:
-                self._active_processes.remove(process)
-            unregister_process_group(process.pid)
+            child_exited = True
 
             stderr = await stderr_task
             if stderr and process.returncode != 0:
@@ -174,10 +170,17 @@ class CursorAdapter:
                 logger.warning("Process exited with code %d: %s", process.returncode, error_msg)
                 yield StreamEvent(type="error", content=error_msg)
         finally:
-            # On early consumer close (GeneratorExit at a yield) or any error, the concurrent
-            # drain above is never awaited; cancel it so it is not left pending.
-            if not stderr_task.done():
-                stderr_task.cancel()
+            # Teardown must live here, not after the read loop: on an exception, or when the
+            # consumer abandons the stream, the normal path never runs and the still-running
+            # child and its registry entry leaked (issue #7).
+            #
+            # On abandonment this is NOT synchronous with the consumer's `break`: CPython
+            # schedules the generator's aclose() as a separate async_generator_athrow task, so
+            # the child is still alive and still registered until a later turn of the loop, and
+            # if the loop is torn down first (asyncio.run cancelling pending tasks) it never
+            # runs at all. That last case is what the atexit net in process_cleanup covers.
+            release_process(process, self._active_processes, stderr_task,
+                            child_exited=child_exited)
 
     def _build_command(
             self,

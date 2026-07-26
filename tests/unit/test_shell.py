@@ -1,5 +1,6 @@
 import pytest
 
+from agent_shell import shell as shell_module
 from agent_shell.shell import AgentShell
 from agent_shell.models.agent import AgentType, AgentResponse
 from agent_shell.adapters.claude_code_adapter import ClaudeCodeAdapter
@@ -53,10 +54,22 @@ class TestResolveAdapter:
         # Assert
         assert isinstance(shell._adapter, CursorAdapter)
 
-    def test_raises_for_unsupported_agent(self):
-        # Arrange / Act / Assert
+    def test_raises_for_agent_type_with_no_registered_adapter(self, monkeypatch):
+        # Arrange — every AgentType now has an adapter, so the guard is unreachable through
+        # the enum as it stands. Dropping an entry reproduces the mistake the guard exists
+        # to catch: a new AgentType member added without a registry entry.
+        registry = dict(shell_module._ADAPTERS)
+        del registry[AgentType.CURSOR]
+        monkeypatch.setattr(shell_module, "_ADAPTERS", registry)
+
+        # Act / Assert
         with pytest.raises(ValueError, match="Unsupported agent"):
-            AgentShell(agent_type=AgentType.GEMINI_CLI)
+            AgentShell(agent_type=AgentType.CURSOR)
+
+    def test_registry_covers_every_agent_type(self):
+        # Arrange / Act / Assert — the guard above is a safety net, not a plan. Nothing
+        # shipped should ever hit it, so pin the registry to the enum.
+        assert set(shell_module._ADAPTERS) == set(AgentType)
 
 
 class TestCwdValidation:

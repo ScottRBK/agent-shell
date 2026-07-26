@@ -4,7 +4,7 @@ These drive `AgentShell.health_check` through the real adapter chain with a mock
 subprocess emitting each agent's *actual captured* NDJSON. They validate the one
 cross-adapter rule the CLI probes established:
 
-    healthy  <=>  a `result` event with content == "ok" arrives and no `error` event.
+    healthy  <=>  the LAST `result` event has content == "ok" and no `error` event arrived.
 
 The failure cases deliberately reproduce the real CLI quirks: opencode exits 0 on
 an unhealthy run (so exit code alone is not a signal), and claude/copilot surface a
@@ -156,7 +156,9 @@ class TestUnhealthyCombinations:
         assert "stdin" not in result.exception
 
     async def test_pi_result_error_is_unhealthy(self):
-        # Arrange — pi exits 0 on a runtime model error; status is in agent_end.
+        # Arrange — pi exits 0 on a runtime model error and writes nothing to stderr, so
+        # agent_end is the only signal: both status AND reason must come from it. This is
+        # the issue #10 incident (inference server had dropped the model) end to end.
         shell = AgentShell(agent_type=AgentType.PI)
         mock_process = _make_mock_process([pi_fx.SESSION_EVENT, pi_fx.AGENT_END_ERROR_EVENT])
 
@@ -166,7 +168,7 @@ class TestUnhealthyCombinations:
 
         # Assert
         assert result.healthy is False
-        assert result.exception is not None
+        assert result.exception == "500 model name=qwen3.6-27b-8Q failed to load"
 
     async def test_pi_bad_model_name_stderr_is_unhealthy(self):
         # Arrange — unknown model name: pi exits 1 with the reason on stderr, empty stdout.

@@ -1,3 +1,12 @@
+"""Copilot CLI E2E tests — real CLI calls.
+
+Every call pins its model explicitly. Without it the CLI falls back to whatever
+`~/.copilot/settings.json` happens to hold, so a change to the developer's personal config
+silently changes what these tests exercise.
+"""
+
+import os
+
 import pytest
 
 from agent_shell.shell import AgentShell
@@ -5,6 +14,27 @@ from agent_shell.models.agent import AgentType, AgentResponse, StreamEvent
 
 
 pytestmark = pytest.mark.e2e
+
+
+# Free-tier model, used wherever the test does not care which model answers.
+# Lowercase only: the CLI rejects "Auto".
+MODEL = "auto"
+
+# 'auto' rejects --effort outright ("does not support reasoning effort configuration"),
+# so the effort/thinking tests need a reasoning-capable model instead.
+REASONING_MODEL = "gpt-5.3-codex"
+
+# On the free tier `auto` is the ONLY selectable model — every named model, this one included,
+# answers "not available" — and `auto` refuses --effort. So reasoning effort is untestable
+# end-to-end without a paid subscription. Gated rather than deleted: the coverage is real, it
+# just needs an account that can reach a named model. Set the var to run them.
+requires_paid_tier = pytest.mark.skipif(
+    not os.getenv("COPILOT_PAID_TIER"),
+    reason=(
+        "needs a paid Copilot tier: the free tier exposes only 'auto', which rejects "
+        "--effort. Set COPILOT_PAID_TIER=1 to run."
+    ),
+)
 
 
 class TestStreamE2E:
@@ -18,6 +48,7 @@ class TestStreamE2E:
             cwd="/tmp",
             prompt="Respond with exactly: hello world",
             allowed_tools=[],
+            model=MODEL,
         ):
             events.append(event)
 
@@ -28,6 +59,7 @@ class TestStreamE2E:
         assert len(text_events) >= 1, "Expected at least one text event"
         assert len(result_events) == 1, "Expected exactly one result event"
 
+    @requires_paid_tier
     async def test_stream_with_thinking_enabled_completes(self):
         # Arrange
         shell = AgentShell(agent_type=AgentType.COPILOT_CLI)
@@ -42,7 +74,7 @@ class TestStreamE2E:
                 "only the reduced fraction."
             ),
             allowed_tools=[],
-            model="gpt-5.3-codex",
+            model=REASONING_MODEL,
             effort="high",
             include_thinking=True,
         ):
@@ -71,6 +103,7 @@ class TestStreamE2E:
             cwd="/tmp",
             prompt="List the files in the current directory using the Bash tool",
             allowed_tools=["Bash"],
+            model=MODEL,
         ):
             events.append(event)
 
@@ -90,6 +123,7 @@ class TestAutoApproveE2E:
             cwd="/tmp",
             prompt="Use the Bash tool to echo 'auto approved'",
             allowed_tools=["Bash"],
+            model=MODEL,
         ):
             events.append(event)
 
@@ -106,6 +140,7 @@ class TestAutoApproveE2E:
             cwd="/tmp",
             prompt="Respond with exactly: no tools needed",
             allowed_tools=[],
+            model=MODEL,
         )
 
         # Assert
@@ -123,6 +158,7 @@ class TestExecuteE2E:
             cwd="/tmp",
             prompt="Respond with exactly: hello world",
             allowed_tools=[],
+            model=MODEL,
         )
 
         # Assert
@@ -130,6 +166,7 @@ class TestExecuteE2E:
         assert len(response.response) > 0, "Expected non-empty response text"
         assert response.cost == 0.0, "Expected cost to be 0.0 (Copilot has no pricing)"
 
+    @requires_paid_tier
     async def test_execute_with_effort(self):
         # Arrange
         shell = AgentShell(agent_type=AgentType.COPILOT_CLI)
@@ -139,6 +176,7 @@ class TestExecuteE2E:
             cwd="/tmp",
             prompt="Respond with exactly: hello world",
             allowed_tools=[],
+            model=REASONING_MODEL,
             effort="high",
         )
 
@@ -158,6 +196,7 @@ class TestSessionE2E:
             cwd="/tmp",
             prompt="Respond with exactly: hello",
             allowed_tools=[],
+            model=MODEL,
         ):
             events.append(event)
 
@@ -176,6 +215,7 @@ class TestSessionE2E:
             cwd="/tmp",
             prompt="Respond with exactly: hello",
             allowed_tools=[],
+            model=MODEL,
         )
 
         # Assert
@@ -183,28 +223,41 @@ class TestSessionE2E:
         assert response.session_id is not None
         assert len(response.session_id) > 0
 
-    async def test_resume_session_with_session_id(self):
+    async def test_resume_returns_the_same_session_id(self):
+        # Resume is checked on session-id identity, not on asking the model to recall a
+        # planted word: the id is parsed out of the CLI's OWN json stream (event sessionId),
+        # so an id that survives `--resume` is copilot itself confirming it continued that
+        # session. Verified against copilot: an unknown id is rejected ("No session, task, or
+        # name matched"), so the match cannot be an echo of what we passed in. The `fresh` leg
+        # is load-bearing — without it an adapter that returned a constant id would pass.
         # Arrange
         shell = AgentShell(agent_type=AgentType.COPILOT_CLI)
 
-        # Act - first call to get a session_id
-        first_response = await shell.execute(
+        # Act
+        first = await shell.execute(
             cwd="/tmp",
-            prompt="Remember the word 'banana'",
+            prompt="Reply with just 'OK'.",
             allowed_tools=[],
+            model=MODEL,
         )
-
-        # Act - resume with session_id
-        second_response = await shell.execute(
+        resumed = await shell.execute(
             cwd="/tmp",
-            prompt="What word did I ask you to remember?",
+            prompt="Reply with just 'OK'.",
             allowed_tools=[],
-            session_id=first_response.session_id,
+            model=MODEL,
+            session_id=first.session_id,
+        )
+        fresh = await shell.execute(
+            cwd="/tmp",
+            prompt="Reply with just 'OK'.",
+            allowed_tools=[],
+            model=MODEL,
         )
 
         # Assert
-        assert isinstance(second_response, AgentResponse)
-        assert len(second_response.response) > 0
+        assert isinstance(resumed, AgentResponse)
+        assert resumed.session_id == first.session_id, "--resume did not continue the session"
+        assert fresh.session_id != first.session_id, "a session-less run reused the id"
 
 
 class TestOutputTokensE2E:
@@ -219,6 +272,7 @@ class TestOutputTokensE2E:
             cwd="/tmp",
             prompt="Write a short paragraph about the sea.",
             allowed_tools=[],
+            model=MODEL,
         )
 
         # Assert
@@ -241,6 +295,7 @@ class TestOutputTokensE2E:
                 "Create one.txt containing 'alpha', create two.txt containing 'beta', "
                 "read both back, then tell me the two words."
             ),
+            model=MODEL,
         )
 
         # Assert — loose plausibility floor: a take-last regression would cap this at the final

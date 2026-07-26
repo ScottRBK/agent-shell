@@ -14,6 +14,13 @@ class AgentAdapter(Protocol):
             session_id: str | None = None,
             disallowed_tools: list[str] | None = None,
     ) -> AgentResponse:
+        """Run the agent to completion and collapse the whole stream into one response.
+
+        Raises AgentExecutionError if the run did not succeed (issue #11) — the failure used
+        to vanish and come back as an empty success-shaped AgentResponse. `str(e)` is the
+        reason on its own, and the partial run data (text, cost, session id, tokens) rides
+        on the exception, so raising destroys nothing the caller already paid for.
+        """
         ...
 
     def stream(

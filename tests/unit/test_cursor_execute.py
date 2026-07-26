@@ -1,8 +1,10 @@
 import json
 from unittest.mock import AsyncMock, patch, MagicMock
 
+import pytest
+
 from agent_shell.adapters.cursor_adapter import CursorAdapter
-from agent_shell.models.agent import AgentResponse
+from agent_shell.models.agent import AgentExecutionError, AgentResponse
 
 from tests.unit.cursor_fixtures import (
     SESSION_ID,
@@ -146,17 +148,23 @@ class TestExecuteTransportEdges:
         assert response.output_tokens == 46
         assert response.session_id == SESSION_ID
 
-    async def test_no_result_degrades_gracefully(self):
-        # Arrange — a killed/truncated run emits text/init but no result event.
+    async def test_no_result_raises_but_keeps_the_partial_run(self):
+        # Arrange — a killed/truncated run emits text/init but no result event. This used to
+        # return a success-shaped response; issue #11 makes it a failure, since a truncated run
+        # is not a run that answered. What it must NOT do is lose the partial output the caller
+        # already paid for, so that rides on the exception instead.
         adapter = CursorAdapter()
         mock_process = _make_mock_process([SYSTEM_INIT_EVENT, ASSISTANT_TEXT_EVENT])
 
         # Act
         with patch("asyncio.create_subprocess_exec", return_value=mock_process):
-            response = await adapter.execute(cwd="/tmp", prompt="ping")
+            with pytest.raises(AgentExecutionError) as excinfo:
+                await adapter.execute(cwd="/tmp", prompt="ping")
 
         # Assert — text + session_id still captured; cost/tokens fall back to zero.
-        assert response.response == "PONG"
-        assert response.cost == 0.0
-        assert response.output_tokens == 0
-        assert response.session_id == SESSION_ID
+        error = excinfo.value
+        assert str(error) == "no result event received"
+        assert error.response == "PONG"
+        assert error.cost == 0.0
+        assert error.output_tokens == 0
+        assert error.session_id == SESSION_ID

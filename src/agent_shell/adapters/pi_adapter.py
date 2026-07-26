@@ -7,8 +7,10 @@ import warnings
 from typing import AsyncIterator
 
 from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, HealthCheckResult
-from agent_shell.process_cleanup import register_process_group, unregister_process_group, kill_process_group
+from agent_shell.process_cleanup import (register_process_group, kill_process_group,
+                                         release_process)
 from agent_shell.adapters.health import run_health_probe
+from agent_shell.adapters.response import collect_response
 from agent_shell.adapters.stderr_format import format_stderr
 from agent_shell.adapters.tool_denial import resolve_disallowed_tools
 
@@ -25,6 +27,26 @@ _DISALLOWED_TOOL_MAP = {
     "edit": ["edit", "write"],
     "read": ["read"],
 }
+
+# Pi's StopReason union is stop|length|toolUse|error|aborted. Neither an errored nor an
+# aborted turn produced a completed answer, so both must report status "error".
+_FAILURE_STOP_REASONS = ("error", "aborted")
+
+
+def _failure_reason(message: dict) -> str:
+    """Best available explanation for a failed assistant message.
+
+    Pi carries the real cause in `errorMessage` (e.g. "500 model name=... failed to
+    load"). It is optional on pi's type, so when it is missing fall back to the
+    stopReason plus the model identity — still far more actionable for a caller than
+    the bare "error" they got before.
+    """
+    reason = message.get("errorMessage")
+    if reason:
+        return str(reason)
+    identity = [f"{key}={message[key]}" for key in ("provider", "model") if message.get(key)]
+    stop_reason = str(message.get("stopReason") or "error")
+    return f"{stop_reason} ({', '.join(identity)})" if identity else stop_reason
 
 
 class PiAdapter:
@@ -43,28 +65,17 @@ class PiAdapter:
             session_id: str | None = None,
             disallowed_tools: list[str] | None = None,
     ) -> AgentResponse:
-        chunks: list[StreamEvent] = []
-        async for event in self.stream(
-            cwd=cwd,
-            prompt=prompt,
+        return await collect_response(
+            self,
+            cwd,
+            prompt,
             allowed_tools=allowed_tools,
-            disallowed_tools=disallowed_tools,
             model=model,
             effort=effort,
             include_thinking=include_thinking,
             auto_approve=auto_approve,
             session_id=session_id,
-        ):
-            chunks.append(event)
-
-        text = "\n".join(e.content for e in chunks if e.type == "text")
-        cost = next((e.cost for e in reversed(chunks) if e.type == "result"), 0.0)
-        duration = next((e.duration for e in reversed(chunks) if e.type == "result"), 0.0)
-        output_tokens = next((e.output_tokens for e in reversed(chunks) if e.type == "result"), 0)
-        returned_session_id = next((e.session_id for e in chunks if e.session_id), None)
-        return AgentResponse(
-            response=text, cost=cost, session_id=returned_session_id,
-            duration=duration, output_tokens=output_tokens,
+            disallowed_tools=disallowed_tools,
         )
 
     async def stream(
@@ -125,6 +136,9 @@ class PiAdapter:
         # tail from aborting the run.
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         buffer = ""
+        # Which exit path stream() took, for the teardown in the `finally`. Only the normal
+        # path below sets it, so every other way out of this body counts as abandonment.
+        child_exited = False
         try:
             while True:
                 chunk = await process.stdout.read(65536)
@@ -152,10 +166,12 @@ class PiAdapter:
                         except json.JSONDecodeError:
                             logger.warning("Skipping malformed JSON: %s", line[:200])
 
+            # stdout hit EOF, so the child has exited or is about to. Reap it here, then
+            # record that we did: the teardown must not re-derive this from
+            # process.returncode, which cannot tell "still running" from "already reaped and
+            # its pid handed to someone else".
             await process.wait()
-            if process in self._active_processes:
-                self._active_processes.remove(process)
-            unregister_process_group(process.pid)
+            child_exited = True
 
             stderr = await stderr_task
             if stderr and process.returncode != 0:
@@ -163,10 +179,17 @@ class PiAdapter:
                 logger.warning("Process exited with code %d: %s", process.returncode, error_msg)
                 yield StreamEvent(type="error", content=error_msg)
         finally:
-            # On early consumer close (GeneratorExit at a yield) or any error, the concurrent
-            # drain above is never awaited; cancel it so it is not left pending.
-            if not stderr_task.done():
-                stderr_task.cancel()
+            # Teardown must live here, not after the read loop: on an exception, or when the
+            # consumer abandons the stream, the normal path never runs and the still-running
+            # child and its registry entry leaked (issue #7).
+            #
+            # On abandonment this is NOT synchronous with the consumer's `break`: CPython
+            # schedules the generator's aclose() as a separate async_generator_athrow task, so
+            # the child is still alive and still registered until a later turn of the loop, and
+            # if the loop is torn down first (asyncio.run cancelling pending tasks) it never
+            # runs at all. That last case is what the atexit net in process_cleanup covers.
+            release_process(process, self._active_processes, stderr_task,
+                            child_exited=child_exited)
 
     def _build_command(
             self,
@@ -238,26 +261,44 @@ class PiAdapter:
                 events.append(StreamEvent(type="tool_use", content=tool_name))
 
         elif t == "agent_end":
-            # One agent_end per run, carrying every message. Sum usage over the assistant
-            # turns: output is a cost measure (reasoning-inclusive) and cost.total is real
-            # for paid providers (0 on local). pi exits 0 even on a model error, so failure
-            # is detected here via stopReason, not from the process return code.
+            # agent_end carries `messages` = the agent loop's `newMessages`, i.e. only what
+            # THIS loop run produced. Prior turns of a resumed --session-id session live in
+            # the loop's context and are never in here, so summing usage over these assistant
+            # messages bills the caller for their own run and nothing else. output is a cost
+            # measure (reasoning-inclusive) and cost.total is real for paid providers (0 on
+            # local).
+            #
+            # A run can emit SEVERAL agent_end events, one per agent loop: pi auto-retries a
+            # retryable fault by default and continues the agent, and auto-compaction does
+            # the same. Each is judged on its own, and outcome.py takes the last as the
+            # verdict.
+            #
+            # pi exits 0 even on a model error, so failure is detected here via stopReason,
+            # not from the process return code — and only the CURRENT turn's stopReason
+            # counts. That is the last assistant message, which is how pi itself reads an
+            # agent_end (agent-session.js `_willRetryAfterAgentEnd`, print-mode's text
+            # output). Folding the whole list would let a turn the agent already recovered
+            # from raise on a run that finished fine.
             output_tokens = 0
             cost = 0.0
-            is_error = False
+            current_turn: dict | None = None
             for message in event.get("messages") or []:
                 if message.get("role") != "assistant":
                     continue
                 usage = message.get("usage") or {}
                 output_tokens += usage.get("output", 0) or 0
                 cost += (usage.get("cost") or {}).get("total", 0) or 0
-                if message.get("stopReason") == "error":
-                    is_error = True
-            status = "error" if is_error else "ok"
+                current_turn = message
+            failed = bool(current_turn) and \
+                current_turn.get("stopReason") in _FAILURE_STOP_REASONS
+            error: str | None = _failure_reason(current_turn) if failed else None
+            status = "error" if failed else "ok"
             logger.info("Result: %s (cost=$%.4f, output_tokens=%d)", status, cost, output_tokens)
+            if error:
+                logger.warning("Agent failed: %s", error)
             events.append(StreamEvent(
                 type="result", content=status, cost=cost, duration=0.0,
-                output_tokens=output_tokens,
+                output_tokens=output_tokens, error=error,
             ))
 
         return events

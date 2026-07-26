@@ -138,6 +138,16 @@ ERROR_EVENT = {
     },
 }
 
+# The same envelope with an empty message. `data.message` is present but blank, so the
+# adapter's `.get("message", "Unknown error")` default does NOT fire and the error event
+# reaches the outcome rule carrying no text at all.
+ERROR_EVENT_EMPTY_MESSAGE = {
+    "type": "error",
+    "timestamp": 1774816285706,
+    "sessionID": "test-session",
+    "error": {"name": "UnknownError", "data": {"message": ""}},
+}
+
 UNKNOWN_EVENT = {
     "type": "something_unexpected",
     "timestamp": 1774816300000,

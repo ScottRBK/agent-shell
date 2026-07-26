@@ -105,29 +105,41 @@ class TestSessionE2E:
         assert response.session_id is not None
         assert len(response.session_id) > 0
 
-    async def test_resume_session_with_session_id(self):
+    async def test_resume_returns_the_same_session_id(self):
+        # Resume is checked on session-id identity, not on asking the model to recall a
+        # planted word: the id is parsed out of the CLI's OWN json stream (event sessionID),
+        # so an id that survives `-s <id>` is opencode itself confirming it continued that
+        # session. Verified against opencode: an unknown id fails the run, so the match cannot
+        # be an echo of what we passed in. The `fresh` leg is load-bearing — without it an
+        # adapter that returned a constant id would pass.
         # Arrange
         shell = AgentShell(agent_type=AgentType.OPENCODE)
 
-        first_response = await shell.execute(
+        # Act
+        first = await shell.execute(
             cwd="/tmp",
-            prompt="The session verification token is ORCHID-742. Reply exactly: acknowledged",
+            prompt="Reply with just 'OK'.",
             allowed_tools=[],
             model=MODEL,
         )
-
-        # Act
-        second_response = await shell.execute(
+        resumed = await shell.execute(
             cwd="/tmp",
-            prompt="Reply with only the session verification token from my previous message.",
+            prompt="Reply with just 'OK'.",
             allowed_tools=[],
             model=MODEL,
-            session_id=first_response.session_id,
+            session_id=first.session_id,
+        )
+        fresh = await shell.execute(
+            cwd="/tmp",
+            prompt="Reply with just 'OK'.",
+            allowed_tools=[],
+            model=MODEL,
         )
 
         # Assert
-        assert isinstance(second_response, AgentResponse)
-        assert second_response.response.strip() == "ORCHID-742"
+        assert isinstance(resumed, AgentResponse)
+        assert resumed.session_id == first.session_id, "-s did not continue the session"
+        assert fresh.session_id != first.session_id, "a session-less run reused the id"
 
 
 class TestDisallowedToolsE2E:

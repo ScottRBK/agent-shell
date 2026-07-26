@@ -423,7 +423,6 @@ test each), proving the `shell.py` passthrough is wired.
   that literal. Optionally have `resolve_disallowed_tools` warn when a passthrough name is a
   close match to a canonical one (e.g. equal after stripping `_`/`-`). Cheap safety net; add a
   test for `["websearch"]` → warning. Keep the name flowing through (don't auto-correct).
-- **`gemini_cli`** is in `AgentType` but has no adapter — out of scope.
 - Update `docs/development/agent_parameter_comparison.md` with the `disallowed_tools`
   support row once implemented.
 

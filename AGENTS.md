@@ -38,6 +38,16 @@ classDiagram
         -_parse_event(event, include_thinking) list~StreamEvent~
     }
 
+    class AgentExecutionError {
+        <<Exception>>
+        +str reason
+        +str response
+        +float cost
+        +str session_id
+        +float duration
+        +int output_tokens
+    }
+
     class MCPServerSpec {
         +str name
         +MCPServerType type
@@ -74,13 +84,13 @@ classDiagram
         +float duration
         +str session_id
         +int output_tokens
+        +str error
     }
 
     class AgentType {
         <<StrEnum>>
         CLAUDE_CODE
         OPENCODE
-        GEMINI_CLI
         COPILOT_CLI
         CODEX
         PI
@@ -90,7 +100,8 @@ classDiagram
     AgentShell --> AgentAdapter : delegates to
     AgentShell --> AgentType : resolves via
     ClaudeCodeAdapter ..|> AgentAdapter : satisfies
-    AgentShell ..> AgentResponse : returns
+    AgentShell ..> AgentResponse : returns on success
+    AgentShell ..> AgentExecutionError : raises on failure
     AgentShell ..> HealthCheckResult : returns
     AgentShell ..> StreamEvent : yields
     AgentShell ..> MCPServerSpec : accepts/returns
@@ -102,7 +113,17 @@ The adapter pattern uses Python's `Protocol` (structural typing) rather than ABC
 
 `output_tokens` is a cost measure — the billed output-token count, which **includes reasoning tokens** (billed at the output rate). Each adapter normalises this so the value is consistent across agents (e.g. OpenCode reports reasoning in a sibling field, so its adapter adds it back).
 
-`health_check(cwd, model, timeout)` probes an agent + model combination with a trivial prompt and returns `HealthCheckResult(healthy, exception)`. The verdict is derived from the normalised event stream (healthy = a `result` event with no `error`), not exit codes — which are unreliable, since some CLIs exit 0 on failure. The shared logic lives once in `adapters/health.py`; each adapter delegates to it.
+`health_check(cwd, model, timeout)` probes an agent + model combination with a trivial prompt
+and returns `HealthCheckResult(healthy, exception)`. The verdict is derived from the normalised
+event stream (healthy = the LAST `result` event says `content == "ok"` and no `error` event
+arrived — pi emits one `result` per agent loop, and its auto-retry runs more than one), not exit
+codes — which are unreliable, since some CLIs exit 0 on failure. `execute()` judges a run by the
+same rule and raises `AgentExecutionError` when it fails, carrying whatever partial
+response/cost/session/token data the run produced. The success/failure verdict lives once in
+`adapters/outcome.py`, shared by both surfaces so they report identical reasons for the same
+stream; `adapters/health.py` wraps it for the health probe, and `adapters/response.py` wraps it
+for `execute()`'s stream-to-`AgentResponse` collection (used by every adapter — each `execute()`
+is a single delegating call into it).
 
 ## Supported Agents
 
@@ -112,14 +133,13 @@ The adapter pattern uses Python's `Protocol` (structural typing) rather than ABC
 - [x] Codex
 - [x] Pi
 - [x] Cursor
-- [ ] Gemini CLI
 
 ## MCP Server Configuration
 
 `AgentShell` exposes a unified API for registering MCP servers across all supported agents:
 
 ```python
-from agent_shell import AgentShell
+from agent_shell.shell import AgentShell
 from agent_shell.models.agent import AgentType, MCPServerSpec, MCPServerType
 
 shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)

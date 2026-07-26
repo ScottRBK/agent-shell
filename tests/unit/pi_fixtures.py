@@ -174,13 +174,113 @@ AGENT_END_TOOLUSE_EVENT = {
     "willRetry": False,
 }
 
-# Error run: the assistant message carries stopReason="error" (pi exits 0 here,
-# so failure must be detected from agent_end, not from stderr/returncode).
+# Error run: the assistant message carries stopReason="error" (pi exits 0 here, so
+# failure must be detected from agent_end, not from stderr/returncode) AND the reason
+# in `errorMessage`. The assistant message below is a verbatim capture of the
+# inference-server fault from issue #10 — a model that had stopped loading. The field
+# is typed optional on pi's AssistantMessage and pi's json mode emits events
+# unfiltered, so it is genuinely on the wire.
 AGENT_END_ERROR_EVENT = {
     "type": "agent_end",
     "messages": [
         {"role": "user", "content": [{"type": "text", "text": "hi"}]},
-        {"role": "assistant", "content": [], "stopReason": "error"},
+        {
+            "role": "assistant",
+            "content": [],
+            "api": "openai-completions",
+            "provider": "llama-ai-server",
+            "model": "qwen3.6-27b-8Q",
+            "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0,
+                      "totalTokens": 0,
+                      "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0,
+                               "total": 0}},
+            "stopReason": "error",
+            "timestamp": 1781725344003,
+            "errorMessage": "500 model name=qwen3.6-27b-8Q failed to load",
+        },
+    ],
+    "willRetry": False,
+}
+
+# Same failure shape with `errorMessage` omitted. The field is optional on pi's type,
+# so the adapter must still produce something more useful than a bare "error".
+AGENT_END_ERROR_NO_MESSAGE_EVENT = {
+    "type": "agent_end",
+    "messages": [
+        {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+        {
+            "role": "assistant",
+            "content": [],
+            "api": "openai-completions",
+            "provider": "llama-ai-server",
+            "model": "qwen3.6-27b-8Q",
+            "usage": {"output": 0, "cost": {"total": 0}},
+            "stopReason": "error",
+            "timestamp": 1781725344003,
+        },
+    ],
+    "willRetry": False,
+}
+
+# Aborted run: pi's StopReason union is stop|length|toolUse|error|aborted. An aborted
+# turn did not complete, so it must not report status "ok".
+AGENT_END_ABORTED_EVENT = {
+    "type": "agent_end",
+    "messages": [
+        {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "partial"}],
+            "api": "openai-completions",
+            "provider": "llama-ai-server",
+            "model": "qwen3.6-27b-8Q",
+            "usage": {"output": 4, "cost": {"total": 0}},
+            "stopReason": "aborted",
+            "timestamp": 1781725344003,
+        },
+    ],
+    "willRetry": False,
+}
+
+# --- auto-retry: TWO agent_end events in ONE process run --------------------
+# Auto-retry is on by default in pi (settings-manager.js: `settings.retry?.enabled ?? true`,
+# maxRetries 3). A retryable provider fault therefore does not end the run: agent-loop.js
+# emits agent_end for the failed attempt with willRetry=true, agent-session.js drops that
+# assistant message from agent state, sleeps out the backoff and calls `agent.continue()` —
+# which runs another agent loop and emits a SECOND agent_end. Auto-compaction takes the same
+# continue path. So one `pi --mode json --print` invocation really can emit more than one
+# agent_end, and it is the LAST one that says how the run ended.
+#
+# agent_end carries `newMessages` — only the messages this loop run created — so the retry's
+# agent_end holds just its own assistant message, and neither carries prior session history.
+AGENT_END_RETRY_PENDING_EVENT = {
+    "type": "agent_end",
+    "messages": [
+        {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+        {
+            "role": "assistant",
+            "content": [],
+            "provider": "llama-ai-server",
+            "model": "qwen3.6-27b-8Q",
+            "usage": {"output": 0, "cost": {"total": 0.002}},
+            "stopReason": "error",
+            "errorMessage": "500 Internal Server Error",
+        },
+    ],
+    "willRetry": True,
+}
+
+AGENT_END_RETRY_SUCCEEDED_EVENT = {
+    "type": "agent_end",
+    "messages": [
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "PONG"}],
+            "provider": "llama-ai-server",
+            "model": "qwen3.6-27b-8Q",
+            "usage": {"output": 31, "cost": {"total": 0.005}},
+            "stopReason": "stop",
+        },
     ],
     "willRetry": False,
 }

@@ -56,28 +56,39 @@ class TestExecuteE2E:
 
 
 class TestSessionResumeE2E:
-    async def test_resume_session_with_session_id(self):
+    async def test_resume_returns_the_same_session_id(self):
+        # Resume is checked on session-id identity, not on asking the model to recall a
+        # planted word: the id is parsed out of the CLI's OWN json stream
+        # (thread.started.thread_id), so an id that survives `codex exec resume <id>` is codex
+        # itself confirming it continued that thread. Verified against codex: an unknown id is
+        # rejected ("no rollout found for thread id"), so the match cannot be an echo of what
+        # we passed in. The `fresh` leg is load-bearing — without it an adapter that returned a
+        # constant id would pass. Note codex takes the id as a subcommand argument, not a flag.
         # Arrange
         shell = AgentShell(agent_type=AgentType.CODEX)
 
-        # Act — first turn establishes a session
+        # Act
         first = await shell.execute(
             cwd="/tmp",
-            prompt="Remember the word 'banana'. Reply with just 'OK'.",
+            prompt="Reply with just 'OK'.",
             model=MODEL,
         )
-
-        # Act — resume on the captured session_id
-        second = await shell.execute(
+        resumed = await shell.execute(
             cwd="/tmp",
-            prompt="What word did I just ask you to remember? Reply with just that word.",
+            prompt="Reply with just 'OK'.",
             model=MODEL,
             session_id=first.session_id,
         )
+        fresh = await shell.execute(
+            cwd="/tmp",
+            prompt="Reply with just 'OK'.",
+            model=MODEL,
+        )
 
         # Assert
-        assert isinstance(second, AgentResponse)
-        assert "banana" in second.response.lower()
+        assert isinstance(resumed, AgentResponse)
+        assert resumed.session_id == first.session_id, "resume did not continue the thread"
+        assert fresh.session_id != first.session_id, "a session-less run reused the id"
 
 
 class TestDisallowedToolsE2E:

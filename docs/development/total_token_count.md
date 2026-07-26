@@ -48,6 +48,8 @@ class StreamEvent:
 `cost` and `duration` are the precedent: optional, default-valued, carried on the `result`
 StreamEvent, and aggregated in `execute()` via "take the last `result` event". Each
 adapter's `execute()` is byte-for-byte identical in that aggregation.
+(Superseded by issue #11: this per-adapter aggregation was extracted into the shared
+`adapters/response.py` collector.)
 
 ## 3. Evidence (live sessions, not fixtures)
 
@@ -175,6 +177,8 @@ class StreamEvent:
 ```
 
 ### 5.2 `execute()` aggregation — identical edit in all four adapters
+
+> Superseded by issue #11: this aggregation now lives once in `adapters/response.py`.
 
 Add one line alongside the existing `cost`/`duration` take-last, and pass it through:
 
@@ -409,7 +413,7 @@ Each harness already has `tests/e2e/test_<harness>_e2e.py` gated with
 | Codex | wire up discarded `usage` dict | small |
 | OpenCode | accumulate across all `step_finish`, emit on stop | **medium** (behaviour change) |
 | Copilot | accumulate across `assistant.message`, emit on result | **medium** (new parsing) |
-| `execute()` | one take-last line ×4 | trivial |
+| `execute()` | one take-last line ×4 (superseded by #11 — now in `response.py`) | trivial |
 | E2E (**required**) | `output_tokens > 0` canary ×4 + multi-step accumulation guard ×2 | small, but mandatory (§6.5) |
 
 The field is feasible and clean everywhere; the real work is the OpenCode and Copilot

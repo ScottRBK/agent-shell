@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 class AgentType(StrEnum):
     CLAUDE_CODE = "claude_code"
     OPENCODE = "opencode"
-    GEMINI_CLI = "gemini_cli"
     COPILOT_CLI = "copilot_cli"
     CODEX = "codex"
     PI = "pi"
@@ -30,6 +29,40 @@ class StreamEvent:
     duration: float = 0.0
     session_id: str | None = None
     output_tokens: int = 0
+    # Why a failing result failed. `content` only says "error"; this carries the reason
+    # when the adapter can recover one (pi puts it in agent_end and it was being dropped).
+    error: str | None = None
+
+class AgentExecutionError(Exception):
+    """Raised by `execute()` when the agent run did not succeed.
+
+    `execute()` collapses a whole stream into one AgentResponse, so a failure carried by
+    that stream had nowhere to go and simply vanished — a failed run was indistinguishable
+    from a successful one that produced no text (issue #11).
+
+    `str(e)` is the reason on its own, so a consumer that only logs the exception still
+    sees the real cause (e.g. "500 model name=qwen3.6-27b-8Q failed to load"). The partial
+    run data rides along so raising destroys nothing the caller already paid for: text
+    produced before the failure, plus whatever cost/session/token accounting arrived.
+    """
+
+    def __init__(
+            self,
+            reason: str,
+            response: str = "",
+            cost: float = 0.0,
+            session_id: str | None = None,
+            duration: float = 0.0,
+            output_tokens: int = 0,
+    ):
+        super().__init__(reason)
+        self.reason = reason
+        self.response = response
+        self.cost = cost
+        self.session_id = session_id
+        self.duration = duration
+        self.output_tokens = output_tokens
+
 
 @dataclass
 class HealthCheckResult:

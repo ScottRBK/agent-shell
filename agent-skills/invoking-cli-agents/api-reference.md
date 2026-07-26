@@ -1,6 +1,7 @@
 # AgentShell API Reference
 
-- [Models](#models) — `AgentType`, `AgentResponse`, `StreamEvent`, `MCPServerSpec`, `HealthCheckResult`
+- [Models](#models) — `AgentType`, `AgentResponse`, `AgentExecutionError`, `StreamEvent`,
+  `MCPServerSpec`, `HealthCheckResult`
 - [StreamEvent types](#event-types)
 - [AgentShell class](#agentshell-class) — `execute`, `stream`, `health_check`, MCP management
 - [AgentAdapter protocol](#agentadapter-protocol)
@@ -16,15 +17,15 @@ from agent_shell.models.agent import AgentType
 class AgentType(StrEnum):
     CLAUDE_CODE = "claude_code"
     OPENCODE = "opencode"
-    GEMINI_CLI = "gemini_cli"   # enum only — NO adapter (raises ValueError)
     COPILOT_CLI = "copilot_cli"
     CODEX = "codex"
     PI = "pi"
+    CURSOR = "cursor"
 ```
 
 ### AgentResponse
 
-Returned by `execute()`.
+Returned by `execute()` on success.
 
 ```python
 @dataclass
@@ -34,6 +35,29 @@ class AgentResponse:
     session_id: str | None = None  # Use to resume this conversation
     duration: float = 0.0    # Wall-clock seconds (0.0 unless the agent reports it)
     output_tokens: int = 0   # Generated tokens (reasoning-inclusive; populated on all agents)
+```
+
+### AgentExecutionError
+
+Raised by `execute()` — never returned — when the run failed: an `error` event was emitted, the
+terminal `result` event had `content == "error"`, or no terminal `result` event arrived at all
+(a killed, truncated, or aborted run). `str(e)` is the bare reason (e.g. `"500 model
+name=qwen3.6-27b-8Q failed to load"`). The constructor arguments double as attributes, carrying
+whatever partial data the run produced before failing.
+
+```python
+from agent_shell.models.agent import AgentExecutionError
+
+class AgentExecutionError(Exception):
+    def __init__(
+        self,
+        reason: str,              # str(e) == reason; also e.reason
+        response: str = "",       # text produced before the failure, if any
+        cost: float = 0.0,
+        session_id: str | None = None,
+        duration: float = 0.0,
+        output_tokens: int = 0,
+    ): ...
 ```
 
 ### StreamEvent
@@ -49,6 +73,7 @@ class StreamEvent:
     duration: float = 0.0    # Elapsed seconds (on "result" events, where supported)
     session_id: str | None = None  # On session-start and "result" events
     output_tokens: int = 0   # Cumulative generated tokens (on "result" events)
+    error: str | None = None # Why a failing "result" failed, when recoverable (Pi)
 ```
 
 ### MCPServerSpec
@@ -91,13 +116,22 @@ Canonical event types emitted by `stream()`:
 |------|------|---------|--------------|
 | `system` | Session starts | `""` | `session_id` is set |
 | `text` | Agent produces output | Response text (may arrive in chunks) | |
-| `thinking` | Agent reasons (requires `include_thinking=True`; Claude Code / Copilot / Pi) | Chain-of-thought text | |
-| `tool_use` | Agent invokes a tool | Tool name (Codex: the command string) | |
-| `result` | Agent finishes | `"ok"` on success, `"error"` on agent-level failure | `cost`, `duration`, `output_tokens`, `session_id` populated where supported |
-| `error` | Agent or CLI process fails | Error message / stderr tail (last 500 chars) | |
+| `thinking` | Agent reasons (requires `include_thinking=True`; Claude Code / Copilot / Pi / Cursor) | Chain-of-thought text | |
+| `tool_use` | Agent invokes a tool | Tool name (Codex, and Cursor shell calls: the command) | |
+| `result` | Agent finishes | `"ok"` or `"error"` | see the note below |
+| `error` | Agent or CLI process fails | Error message, or stderr head+tail (500 chars each) | |
+
+> A `result` event carries `cost`, `duration`, `output_tokens` and `session_id` on the agents
+> that report them. On a failing result, `error` holds the reason when the adapter recovered a
+> structured one (Pi); it is `None` otherwise.
 
 > Codex emits the session-start event as `type="session"` (not `"system"`). If you branch on
 > the session event across agents, match both.
+
+> Long stderr is **not** tail-only. `format_stderr` keeps the first 500 *and* the last 500
+> characters, joined by a `... [truncated] ...` marker, so a reason stated up front
+> (cursor-agent's `Cannot use this model: <name>`) survives alongside a trailing stack trace.
+> A stderr of 1000 characters or fewer is passed through whole, with no marker.
 
 ## AgentShell Class
 
@@ -106,7 +140,7 @@ from agent_shell.shell import AgentShell
 
 class AgentShell:
     def __init__(self, agent_type: AgentType): ...
-    # raises ValueError for an AgentType with no adapter (e.g. GEMINI_CLI)
+    # raises ValueError for an AgentType with no registered adapter
 
     async def execute(
         self,
@@ -120,13 +154,14 @@ class AgentShell:
         session_id: str | None = None,          # Resume previous session
         disallowed_tools: list[str] | None = None,  # Canonical denylist (enforced; deny > allow)
     ) -> AgentResponse: ...
+    # Raises AgentExecutionError if the run failed; see the Models section above.
 
     def stream(self, ...) -> AsyncIterator[StreamEvent]: ...   # same parameters as execute()
 
     async def health_check(
         self, cwd: str, model: str | None = None, timeout: float = 60.0,
     ) -> HealthCheckResult: ...
-    # Sends a trivial no-tool prompt; healthy iff a result=="ok" event arrives and no error.
+    # Sends a trivial no-tool prompt; healthy iff the LAST result event is "ok" and no error.
 
     async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None: ...
     async def remove_mcp_server(self, mcp_server_name: str) -> None: ...
@@ -156,6 +191,7 @@ class AgentAdapter(Protocol):
     async def execute(self, cwd, prompt, allowed_tools=None, model=None, effort=None,
                       include_thinking=False, auto_approve=True, session_id=None,
                       disallowed_tools=None) -> AgentResponse: ...
+    # Raises AgentExecutionError if the run failed.
 
     def stream(self, ...) -> AsyncIterator[StreamEvent]: ...   # same signature as execute()
 
@@ -199,3 +235,24 @@ class AgentAdapter(Protocol):
 - `effort` → `--thinking` (levels: off/minimal/low/medium/high/xhigh); `auto_approve` → `--approve` / `--no-approve` (one is always sent, else `pi -p` hangs on a trust prompt).
 - `cost` is real for paid providers (`0.0` on local); `duration` is `0.0`.
 - MCP-management methods raise `NotImplementedError`.
+
+### Cursor
+- `model` → `--model` (e.g. `"sonnet-4-thinking"`, `"gpt-5"`); parameterised models take bracket
+  overrides, e.g. `"claude-opus-4-8[context=1m,effort=high]"`. A Free plan exposes only `auto`.
+- `allowed_tools` **and** `disallowed_tools` are both **ignored** (both warn). Cursor has no
+  per-call tool policy of any kind — it lives in `.cursor/cli.json` — so *nothing* in this library
+  can scope a Cursor agent; restrict it outside (read-only mount, container). `disallowed_tools`
+  warns on every call; `allowed_tools` and `effort` warn once per adapter instance.
+- `effort` is **ignored** (warns): Cursor has no effort flag, only the model bracket-override
+  above, which the adapter does not inject. `include_thinking` **is** honoured — Cursor streams
+  reasoning as `thinking` deltas.
+- `auto_approve` → `--force`; without it tools auto-*reject* but the run still completes (exit 0).
+  `--trust` is always sent regardless: untrusted, `cursor-agent` exits 1 with zero stdout and a
+  plain-text "Workspace Trust Required" on stderr.
+- Session resume is `--resume=<id>` (the `=` form binds the id, whose CLI arg is optional). The
+  resumed run reports the SAME id — but an unknown id is **accepted**, creating a session under
+  it rather than failing (like Pi; unlike Claude Code, OpenCode, Copilot and Codex, which all
+  reject one). A matching id is therefore not proof a prior transcript was continued.
+- `duration` and `output_tokens` are real (`usage.outputTokens`); `cost` is always `0.0` — Cursor
+  reports no cost. MCP-management methods raise `NotImplementedError` (`cursor-agent mcp` has no
+  add/remove, and its `list` returns only name+status, which cannot rebuild an `MCPServerSpec`).

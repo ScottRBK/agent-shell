@@ -12,21 +12,25 @@ from agent_shell.adapters.pi_adapter import PiAdapter
 from agent_shell.adapters.cursor_adapter import CursorAdapter
 
 
+# Every AgentType must appear here. The lookup below still guards against a member that
+# does not, because adding an AgentType and forgetting the registry entry is an easy miss
+# and the failure should be a clear error at construction, not an AttributeError later.
+_ADAPTERS: dict[AgentType, type[AgentAdapter]] = {
+        AgentType.CLAUDE_CODE: ClaudeCodeAdapter,
+        AgentType.OPENCODE: OpenCodeAdapter,
+        AgentType.COPILOT_CLI: CopilotCLIAdapter,
+        AgentType.CODEX: CodexAdapter,
+        AgentType.PI: PiAdapter,
+        AgentType.CURSOR: CursorAdapter,
+}
+
+
 class AgentShell():
     def __init__(self, agent_type: AgentType):
         self._adapter = self._resolve_adapter(agent_type=agent_type)
 
     def _resolve_adapter(self, agent_type: AgentType) -> AgentAdapter:
-        adapters = {
-                AgentType.CLAUDE_CODE: ClaudeCodeAdapter,
-                AgentType.OPENCODE: OpenCodeAdapter,
-                AgentType.COPILOT_CLI: CopilotCLIAdapter,
-                AgentType.CODEX: CodexAdapter,
-                AgentType.PI: PiAdapter,
-                AgentType.CURSOR: CursorAdapter,
-        }
-        
-        adapter_cls = adapters.get(agent_type)
+        adapter_cls = _ADAPTERS.get(agent_type)
 
         if not adapter_cls:
             raise ValueError(f"Unsupported agent: {agent_type}")

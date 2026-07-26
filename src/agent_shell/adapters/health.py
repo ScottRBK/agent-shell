@@ -1,11 +1,14 @@
 """Shared health-probe logic for all adapters.
 
-Every adapter's `health_check` delegates here, so the rule lives in one place. The
-CLI probes showed there is no reliable raw signal (exit code lies — opencode returns
-0 on failure; stderr placement is inconsistent), but every adapter already normalizes
-outcomes into the StreamEvent contract. So the rule is expressed purely over events:
+Every adapter's `health_check` delegates here, so the probe lives in one place. Whether
+the run succeeded is not decided here though: that is the same question `execute` asks, so
+both read the verdict from outcome.py and a health failure and an execution failure are
+worded identically.
 
-    healthy  <=>  a `result` event with content == "ok" arrives and no `error` event.
+    healthy  <=>  the LAST `result` event has content == "ok" and no `error` event arrived.
+
+Last, not any: Pi auto-retries, so a run can emit `result(error)` then `result(ok)` — or the
+reverse when a continuation fails. Only the final verdict counts.
 
 A trivial prompt is sent with no tools; only the terminal event matters, never the text.
 """
@@ -13,7 +16,8 @@ A trivial prompt is sent with no tools; only the terminal event matters, never t
 import asyncio
 import logging
 
-from agent_shell.models.agent import HealthCheckResult
+from agent_shell.adapters.outcome import failure_reason
+from agent_shell.models.agent import HealthCheckResult, StreamEvent
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +32,9 @@ async def run_health_probe(
         model: str | None = None,
         timeout: float = 60.0,
 ) -> HealthCheckResult:
-    saw_ok_result = False
-    error_detail: str | None = None
+    events: list[StreamEvent] = []
 
     async def _consume() -> None:
-        nonlocal saw_ok_result, error_detail
         async for event in adapter.stream(
                 cwd=cwd,
                 prompt=HEALTH_PROMPT,
@@ -40,14 +42,7 @@ async def run_health_probe(
                 allowed_tools=[],
                 auto_approve=True,
         ):
-            if event.type == "error":
-                if error_detail is None:
-                    error_detail = event.content or "unknown error"
-            elif event.type == "result":
-                if event.content == "ok":
-                    saw_ok_result = True
-                elif error_detail is None:
-                    error_detail = "agent reported an error result"
+            events.append(event)
 
     try:
         await asyncio.wait_for(_consume(), timeout=timeout)
@@ -64,9 +59,7 @@ async def run_health_probe(
         logger.warning("Health check failed (model=%s): %s", model, e)
         return HealthCheckResult(healthy=False, exception=str(e) or repr(e))
 
-    healthy = saw_ok_result and error_detail is None
-    if healthy:
+    reason = failure_reason(events)
+    if reason is None:
         return HealthCheckResult(healthy=True, exception=None)
-    return HealthCheckResult(
-        healthy=False, exception=error_detail or "no result event received",
-    )
+    return HealthCheckResult(healthy=False, exception=reason)

@@ -49,7 +49,7 @@ class TestHealthRule:
         assert result == HealthCheckResult(healthy=True, exception=None)
 
     async def test_error_result_is_unhealthy(self):
-        # Arrange
+        # Arrange — no reason attached, so the generic wording is all we can say.
         adapter = FakeAdapter([StreamEvent(type="result", content="error")])
 
         # Act
@@ -57,7 +57,22 @@ class TestHealthRule:
 
         # Assert
         assert result.healthy is False
-        assert result.exception is not None
+        assert result.exception == "agent reported an error result"
+
+    async def test_error_result_reason_is_preferred_over_generic_wording(self):
+        # Arrange — when the adapter recovered a reason, the health check must report it
+        # rather than the useless generic string (issue #10).
+        adapter = FakeAdapter([StreamEvent(
+            type="result", content="error",
+            error="500 model name=qwen3.6-27b-8Q failed to load",
+        )])
+
+        # Act
+        result = await run_health_probe(adapter, cwd="/tmp", model="m")
+
+        # Assert
+        assert result.healthy is False
+        assert result.exception == "500 model name=qwen3.6-27b-8Q failed to load"
 
     async def test_error_event_captures_its_content_as_exception(self):
         # Arrange

@@ -8,8 +8,8 @@ and returning the output that can be used programatically as a unified contract
   agent; swap the backend without changing a line of consuming code.
 - **Six CLI agents** — Claude Code, OpenCode, Copilot CLI, Codex, Pi, and Cursor behind a
   common adapter protocol.
-- **Execute or stream** — get one `AgentResponse`, or async-iterate normalized `StreamEvent`s
-  with optional thinking/reasoning.
+- **Execute or stream** — get one `AgentResponse` (raises `AgentExecutionError` on a failed run),
+  or async-iterate normalized `StreamEvent`s with optional thinking/reasoning.
 - **Session resumption** — continue any conversation by passing back its `session_id`.
 - **Normalized cost & tokens** — consistent `cost` and `output_tokens` (reasoning included)
   regardless of how each CLI reports them.
@@ -67,6 +67,22 @@ follow_up = await shell.execute(
 
 > `output_tokens` is a cost measure: the billed output-token count, which **includes reasoning
 > tokens** (they are billed at the output rate). It is reported consistently across all adapters.
+
+### Failure handling
+
+`execute()` raises `AgentExecutionError` instead of returning when a run failed — an `error`
+event was emitted, the terminal `result` had `content == "error"`, or no terminal `result`
+arrived at all. `str(e)` is the bare reason; the exception also carries whatever partial
+`response`/`cost`/`session_id`/`duration`/`output_tokens` the run produced before failing.
+
+```python
+from agent_shell.models.agent import AgentExecutionError
+
+try:
+    response = await shell.execute(cwd="/path/to/project", prompt="Fix the failing test")
+except AgentExecutionError as e:
+    print(f"run failed: {e}")   # e.g. "500 model name=qwen3.6-27b-8Q failed to load"
+```
 
 ### Stream
 

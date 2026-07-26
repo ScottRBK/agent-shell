@@ -213,30 +213,41 @@ class TestSessionE2E:
         assert response.session_id is not None
         assert len(response.session_id) > 0
 
-    async def test_resume_session_with_session_id(self):
+    async def test_resume_returns_the_same_session_id(self):
+        # Resume is checked on session-id identity, not on asking the model to recall a
+        # planted word: the id is parsed out of the CLI's OWN json stream (result.session_id),
+        # so an id that survives `--resume` is the CLI itself confirming it continued that
+        # session. Verified against claude-code: an unknown id is rejected outright, so the
+        # match cannot be an echo of what we passed in. The `fresh` leg is load-bearing —
+        # without it an adapter that returned a constant id would pass.
         # Arrange
         shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
 
-        # Act - first call to get a session_id
-        first_response = await shell.execute(
+        # Act
+        first = await shell.execute(
             cwd="/tmp",
-            prompt="Remember the word 'banana'",
+            prompt="Reply with just 'OK'.",
             allowed_tools=[],
             model="haiku",
         )
-
-        # Act - resume with session_id
-        second_response = await shell.execute(
+        resumed = await shell.execute(
             cwd="/tmp",
-            prompt="What word did I ask you to remember?",
+            prompt="Reply with just 'OK'.",
             allowed_tools=[],
             model="haiku",
-            session_id=first_response.session_id,
+            session_id=first.session_id,
+        )
+        fresh = await shell.execute(
+            cwd="/tmp",
+            prompt="Reply with just 'OK'.",
+            allowed_tools=[],
+            model="haiku",
         )
 
         # Assert
-        assert isinstance(second_response, AgentResponse)
-        assert len(second_response.response) > 0
+        assert isinstance(resumed, AgentResponse)
+        assert resumed.session_id == first.session_id, "--resume did not continue the session"
+        assert fresh.session_id != first.session_id, "a session-less run reused the id"
 
 
 class TestOutputTokensE2E:

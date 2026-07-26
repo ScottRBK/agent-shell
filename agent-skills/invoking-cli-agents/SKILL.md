@@ -1,6 +1,6 @@
 ---
 name: invoking-cli-agents
-description: Use when programmatically invoking a CLI coding agent (Claude Code, OpenCode, Copilot CLI, Codex, Pi) from Python, delegating a task to a sub-agent, orchestrating several agents, streaming an agent's output, resuming an agent session, restricting which tools an agent may use, or checking whether an agent/model is healthy. Keywords: AgentShell, headless agent, subprocess, allowed_tools, disallowed_tools, read-only agent, session_id, cost, output_tokens.
+description: Use when programmatically invoking a CLI coding agent (Claude Code, OpenCode, Copilot CLI, Codex, Pi, Cursor) from Python, delegating a task to a sub-agent, orchestrating several agents, streaming an agent's output, resuming an agent session, restricting which tools an agent may use, or checking whether an agent/model is healthy. Keywords: AgentShell, headless agent, subprocess, allowed_tools, disallowed_tools, read-only agent, session_id, cost, output_tokens.
 ---
 
 # Invoking CLI Agents with AgentShell
@@ -15,7 +15,7 @@ passes `model` strings through verbatim and does not manage credentials.
 
 ## When to Use
 
-- You need to invoke Claude Code, OpenCode, Copilot CLI, Codex, or Pi from Python
+- You need to invoke Claude Code, OpenCode, Copilot CLI, Codex, Pi, or Cursor from Python
 - You want to delegate a coding task to a sub-agent and collect the result
 - You need to orchestrate multi-step workflows across agents
 - You want to stream agent output in real-time
@@ -120,11 +120,11 @@ Both `execute()` and `stream()` take the same parameters.
 |-----------|------|---------|---------|
 | `cwd` | `str` | required | Working directory (must exist, else `ValueError`) |
 | `prompt` | `str` | required | Task or question for the agent |
-| `allowed_tools` | `list[str] \| None` | `None` | Whitelist of tools (agent-native names). `None` = all tools. Honoured by Claude Code, Copilot CLI, Pi; ignored by OpenCode and Codex. **Only actually enforced when `auto_approve=False`** (see Tool Restriction). |
+| `allowed_tools` | `list[str] \| None` | `None` | Whitelist of tools (agent-native names). `None` = all tools. Honoured by Claude Code, Copilot CLI, Pi; ignored by OpenCode, Codex and Cursor. **Only actually enforced when `auto_approve=False`** (see Tool Restriction). |
 | `disallowed_tools` | `list[str] \| None` | `None` | Denylist using a canonical vocabulary (see Tool Restriction). Deny takes precedence over allow **and** over `auto_approve`, but covers only built-in tools. Enforcement varies per agent; unenforceable denies emit a `UserWarning`. |
 | `model` | `str \| None` | `None` | Model alias or name, passed to the CLI verbatim (e.g. `"sonnet"`, `"opencode/big-pickle"`) |
-| `effort` | `str \| None` | `None` | Reasoning effort: `"low"`, `"medium"`, `"high"`, etc. Claude Code, Copilot, Codex, Pi. **Ignored by OpenCode.** |
-| `include_thinking` | `bool` | `False` | Yield `thinking` events in `stream()`. Claude Code, Copilot, Pi. **Dropped by `execute()`** (which keeps only text). |
+| `effort` | `str \| None` | `None` | Reasoning effort: `"low"`, `"medium"`, `"high"`, etc. Claude Code, Copilot, Codex, Pi. **Ignored by OpenCode** (silently) **and Cursor** (warns). |
+| `include_thinking` | `bool` | `False` | Yield `thinking` events in `stream()`. Claude Code, Copilot, Pi, Cursor. **Dropped by `execute()`** (which keeps only text). |
 | `auto_approve` | `bool` | `True` | Skip tool permission prompts. Mapped on every adapter (Pi *requires* a trust decision — the default avoids a hang). **On Claude Code the default `True` sends `--dangerously-skip-permissions`, which bypasses `allowed_tools`.** |
 | `session_id` | `str \| None` | `None` | Resume a previous session |
 
@@ -143,7 +143,7 @@ AgentType.OPENCODE      # OpenCode CLI
 AgentType.COPILOT_CLI   # GitHub Copilot CLI
 AgentType.CODEX         # OpenAI Codex CLI
 AgentType.PI            # Pi coding agent
-AgentType.GEMINI_CLI    # enum value only — NO adapter (raises ValueError at construction)
+AgentType.CURSOR        # Cursor CLI (cursor-agent)
 ```
 
 Capabilities differ by agent. `output_tokens` is populated on all of them; the rest varies:
@@ -155,6 +155,7 @@ Capabilities differ by agent. `output_tokens` is populated on all of them; the r
 | Copilot CLI | ✅ | ⚠️ `bash`, `edit` only | ✅ | ❌ `0.0` | ✅ real | ✅ |
 | Codex | ❌ | ⚠️ `web_search` only | ✅ | ❌ `0.0` | ❌ `0.0` | ✅ |
 | Pi | ✅ | ⚠️ `bash`, `edit`, `read` | ✅ | ⚠️ paid providers only | ❌ `0.0` | ❌ raises |
+| Cursor | ❌ warns | ❌ none — warns | ❌ warns | ❌ `0.0` | ✅ real | ❌ raises |
 
 A `✅` for `allowed_tools` means the flag is passed — but it only *enforces* with
 `auto_approve=False`; `disallowed_tools` covers only built-in tools. See Tool Restriction.
@@ -188,7 +189,9 @@ response = await shell.execute(
     auto_approve=False,
 )
 
-# OpenCode / Codex ignore allowed_tools — use the enforced denylist instead.
+# OpenCode ignores allowed_tools, but its denylist IS enforced — use that instead. (Codex and
+# Cursor ignore BOTH controls: Codex can deny only web_search, Cursor nothing at all, so for
+# those two in-library scoping buys you nothing — restrict them outside the library.)
 # Keep auto_approve at its default True: on OpenCode, auto_approve=False makes `opencode run`
 # auto-reject prompts and can silently abort the turn. (auto_approve=False is only for the
 # whitelist path above, on Claude Code / Copilot / Pi.)
@@ -211,28 +214,41 @@ response = await shell.execute(
 
 ## Error Handling
 
-AgentShell raises exceptions for its own preconditions, but **CLI agent failures are reported
-as events, not exceptions.**
+AgentShell raises exceptions for its own preconditions **and** for a failed agent run:
 
 ```python
 # cwd validation - raises ValueError if directory doesn't exist
-# Unsupported agent (e.g. AgentType.GEMINI_CLI) - raises ValueError at construction
+# Unsupported agent - an AgentType with no registered adapter raises ValueError
 # KeyboardInterrupt - AgentShell cancels the subprocess cleanly, then re-raises
 ```
 
-`execute()` returns an `AgentResponse` with whatever text accumulated (possibly empty) and
-**no failure signal** — an empty `response` usually means the agent failed. To detect failures,
-use `stream()` and treat success as a **positive** signal, the way the library's own
-`health_check` does: a `result` event with `content == "ok"` arrived **and** no `error` event.
+A run counts as failed when any of: an `error` event was emitted; the terminal `result` event
+has `content == "error"`; or no terminal `result` event arrived at all (a killed, truncated, or
+aborted run — OpenCode in particular can drop the tail and still exit 0). `execute()` raises
+`AgentExecutionError` for all three; `str(e)` is the bare reason (e.g. `"500 model
+name=qwen3.6-27b-8Q failed to load"`), and the exception also carries whatever partial data the
+run produced before failing:
 
-Failure shows up three ways, and the positive-signal check below catches all three: (1) an
-`error` event; (2) a `result` event with `content == "error"` — how a bad model or usage limit
-often surfaces, sometimes with *no* separate `error` event; (3) *no* `result` event at all —
-a turn can truncate with no terminal event and no error (OpenCode in particular can drop the
-tail and still exit 0), leaving a partial response that looks fine. Never infer success from
-"got some text and no error event." Treat a missing `result` event as failure (and consider a
-retry). Neither `execute()` nor `stream()` has a timeout, so wrap the call in `asyncio.wait_for`
-to guard against a hang.
+```python
+from agent_shell.models.agent import AgentExecutionError
+
+try:
+    response = await shell.execute(cwd=project_path, prompt="do something")
+except AgentExecutionError as e:
+    print(f"failed: {e}")               # str(e) == e.reason, the bare cause
+    print(e.response)                   # text produced before the failure, if any
+    print(e.cost, e.session_id, e.duration, e.output_tokens)
+else:
+    print(response.response)
+```
+
+`stream()` has no exception equivalent — it yields the raw events and leaves the verdict to the
+caller. Apply the same rule as a **positive** signal, the way the library's own `health_check`
+does: success is the LAST `result` event carrying `content == "ok"` **and** no `error` event —
+the loop below already does this, since each `result` overwrites the verdict. (An agent that
+retries a transient fault emits a failing `result` and then a good one.) Never infer
+success from "got some text and no error event." Neither `execute()` nor `stream()` has a
+timeout, so wrap the call in `asyncio.wait_for` to guard against a hang.
 
 ```python
 saw_ok = False
@@ -254,8 +270,9 @@ succeeded = saw_ok and error is None         # absent result => succeeded stays 
   event of every adapter. It reads `0` when the `result` event never arrives (a truncated turn),
   so it is not a standalone liveness check — pair it with the success check above.
 - `cost` — real for Claude Code and paid Pi providers; frequently `0.0` for OpenCode,
-  Copilot, and Codex (they don't report it). Don't treat `cost == 0` as "the call failed".
-- `duration` — real only for Claude Code and Copilot CLI; `0.0` elsewhere.
+  Copilot, Codex, and always `0.0` for Cursor (they don't report it). Don't treat
+  `cost == 0` as "the call failed".
+- `duration` — real for Claude Code, Copilot CLI, and Cursor; `0.0` elsewhere.
 
 ## Other Capabilities
 
@@ -264,7 +281,7 @@ succeeded = saw_ok and error is None         # absent result => succeeded stays 
   **not** run your prompt, so use the stream-based check above when you care about a specific
   call's outcome.
 - **MCP server management** — `add_mcp_server`, `remove_mcp_server`, `list_mcp_servers` manage
-  the underlying CLI's MCP config (Pi raises `NotImplementedError`).
+  the underlying CLI's MCP config (Pi and Cursor raise `NotImplementedError`).
 
 See [api-reference.md](api-reference.md) for their full signatures and the `MCPServerSpec` model.
 
@@ -286,10 +303,10 @@ logging.getLogger("agent_shell").addHandler(logging.StreamHandler())
 | Stream events live | `async for event in shell.stream(cwd, prompt)` |
 | Continue a conversation | Pass `session_id=response.session_id` |
 | Whitelist tools (Claude/Copilot/Pi) | `allowed_tools=["Read", "Glob"]` |
-| Deny tools on any agent (enforced) | `disallowed_tools=["edit", "bash"]` |
+| Deny tools (Claude/OpenCode/Copilot/Pi) | `disallowed_tools=["edit", "bash"]` |
 | Track usage | Read `response.output_tokens` (portable) or `response.cost` |
 | Use a specific model | `model="sonnet"` |
-| Increase reasoning depth | `effort="high"` (not OpenCode) |
+| Increase reasoning depth | `effort="high"` (not OpenCode or Cursor) |
 | See agent thinking | `include_thinking=True` in `stream()` |
 | Check an agent/model works | `await shell.health_check(cwd, model=...)` |
 | Cancel a running agent | `KeyboardInterrupt` (handled automatically) |
@@ -302,14 +319,14 @@ logging.getLogger("agent_shell").addHandler(logging.StreamHandler())
 | Forgetting `await` | Both `execute()` and the `stream()` iterator are async |
 | `allowed_tools=[]` to disable tools | Empty list is falsy → full access. Use a non-empty list or `disallowed_tools` |
 | `allowed_tools` with the default `auto_approve=True` as a safety boundary | `--dangerously-skip-permissions` bypasses it. Set `auto_approve=False`, or use `disallowed_tools` |
-| Relying on `allowed_tools` with OpenCode/Codex | They ignore it. Use `disallowed_tools` |
+| Relying on `allowed_tools` with OpenCode/Codex/Cursor | Ignored; only OpenCode's deny works |
 | Trusting a `prompt` instruction ("don't edit files") as a guarantee | Enforce it (`disallowed_tools`, or whitelist + `auto_approve=False`) |
 | Assuming `disallowed_tools` sandboxes the agent | It covers only built-in tools; MCP/other-named tools bypass it. OS-sandbox for a hard guarantee |
 | Treating `cost == 0` as failure | Many agents don't report cost; use `output_tokens` |
-| Expecting `execute()` to expose thinking or detect failure | Use `stream()` for both |
+| Expecting `execute()` to expose thinking | Use `stream()` with `include_thinking=True` |
+| Not catching `AgentExecutionError` | `execute()` raises on a failed run — catch it |
 | Ignoring `UserWarning` on a deny | An unenforceable deny is warned, not applied — the tool is NOT blocked |
 | Ignoring `session_id` for multi-step work | Without it, each call starts fresh |
-| Using `AgentType.GEMINI_CLI` | No adapter — raises `ValueError` at construction |
 
 ## API Reference
 

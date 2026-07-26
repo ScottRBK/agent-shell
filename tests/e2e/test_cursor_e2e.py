@@ -76,24 +76,40 @@ class TestOutputTokensE2E:
 
 
 class TestSessionResumeE2E:
-    async def test_resume_session_with_session_id(self):
-        # Regression guard for the `--resume=<id>` form and session continuity.
+    async def test_resume_returns_the_same_session_id(self):
+        # Regression guard for the `--resume=<id>` form. Checked on session-id identity rather
+        # than by asking the model to recall a planted word: the id is parsed out of the CLI's
+        # OWN json stream (event session_id), so it is cursor-agent reporting which session it
+        # ran, not an assertion about model cooperation.
+        #
+        # CAVEAT, measured: unlike claude-code/codex/copilot/opencode, cursor-agent ACCEPTS an
+        # unknown id — `--resume=<never-seen-uuid>` starts a session under that id and echoes
+        # it back. So identity here proves the adapter passed the flag through and cursor
+        # honoured it; it is not by itself proof a prior transcript was replayed. It still
+        # catches the regressions that matter to us: drop or rename the flag and cursor mints
+        # its own id instead, failing the first assert.
+        #
+        # The `fresh` leg is load-bearing — without it an adapter that returned a constant id
+        # would pass.
         # Arrange
         shell = AgentShell(agent_type=AgentType.CURSOR)
 
-        # Act — first turn establishes a session
+        # Act
         first = await shell.execute(
             cwd="/tmp",
-            prompt="Remember the word 'banana'. Reply with just 'OK'.",
+            prompt="Reply with just 'OK'.",
         )
-
-        # Act — resume on the captured session_id
-        second = await shell.execute(
+        resumed = await shell.execute(
             cwd="/tmp",
-            prompt="What word did I just ask you to remember? Reply with just that word.",
+            prompt="Reply with just 'OK'.",
             session_id=first.session_id,
+        )
+        fresh = await shell.execute(
+            cwd="/tmp",
+            prompt="Reply with just 'OK'.",
         )
 
         # Assert
-        assert isinstance(second, AgentResponse)
-        assert "banana" in second.response.lower()
+        assert isinstance(resumed, AgentResponse)
+        assert resumed.session_id == first.session_id, "--resume= did not continue the session"
+        assert fresh.session_id != first.session_id, "a session-less run reused the id"

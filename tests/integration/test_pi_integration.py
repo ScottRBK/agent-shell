@@ -228,9 +228,11 @@ class TestErrorHandling:
             async for event in shell.stream(cwd="/tmp", prompt="t"):
                 events.append(event)
 
-        # Assert
+        # Assert — the reason must survive the whole stream() path, not just the parser;
+        # it is the only place a consumer can learn why the run failed (issue #10).
         result = [e for e in events if e.type == "result"][0]
         assert result.content == "error"
+        assert result.error == "500 model name=qwen3.6-27b-8Q failed to load"
 
     async def test_stderr_emits_error_event_on_nonzero_exit(self):
         # Arrange

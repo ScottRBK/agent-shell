@@ -19,7 +19,7 @@ VALID_MODEL = {
     AgentType.CLAUDE_CODE: "haiku",
     AgentType.OPENCODE: "opencode/big-pickle",
     AgentType.CODEX: "gpt-5.4-mini",
-    AgentType.COPILOT_CLI: None,
+    AgentType.COPILOT_CLI: "auto",
     AgentType.PI: "openai-codex/gpt-5.4-mini",
     AgentType.CURSOR: None,
 }
