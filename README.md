@@ -35,6 +35,8 @@ pip install agent-shell-py
 
 ## Agent skills
 
+![Skill_Banner](docs/assets/skill_banner.png)
+
 The repository includes reusable skills that teach coding agents how to use AgentShell:
 
 - `invoking-cli-agents` — invoke, stream, resume, and restrict CLI agents.
