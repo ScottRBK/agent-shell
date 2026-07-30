@@ -33,6 +33,37 @@ or with pip:
 pip install agent-shell-py
 ```
 
+## Agent skills
+
+The repository includes reusable skills that teach coding agents how to use AgentShell:
+
+- `invoking-cli-agents` — invoke, stream, resume, and restrict CLI agents.
+- `delegating-code-review` — delegate an independent code review through AgentShell.
+
+Install them interactively with the Vercel Skills CLI:
+
+```bash
+npx skills add ScottRBK/agent-shell
+```
+
+Or install both skills globally for every coding agent supported by AgentShell:
+
+```bash
+npx skills add ScottRBK/agent-shell --global \
+  --skill '*' \
+  --agent claude-code opencode github-copilot codex pi cursor \
+  --yes
+```
+
+Install only the core AgentShell skill with:
+
+```bash
+npx skills add ScottRBK/agent-shell --skill invoking-cli-agents
+```
+
+The skills provide agent instructions. Install `agent-shell-py` and the chosen coding-agent CLIs
+separately.
+
 ## Examples
 
 ### Execute
