@@ -17,5 +17,5 @@ class TestCancel:
             await adapter.cancel()
 
         # Assert
-        mock_kill.assert_called_once_with(12345)
+        mock_kill.assert_called_once_with(mock_process)
         assert len(adapter._active_processes) == 0

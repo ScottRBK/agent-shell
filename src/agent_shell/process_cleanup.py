@@ -1,176 +1,142 @@
+"""Process-group ownership and cleanup through dedicated guardian processes.
+
+Every CLI runs in a process group containing a tiny guardian. AgentShell owns the guardian through
+an anonymous pipe, which is an exact kernel object rather than a reusable numeric PID. Cleanup sends
+one byte through that pipe; the guardian then signals its own group.
+
+A normal stream sends RELEASE so a CLI's intentional leftover processes may continue. Cancellation,
+abandonment, model-discovery cleanup, and atexit send KILL. If AgentShell disappears before cleanup,
+the pipe closes and the guardian treats EOF as KILL.
+
+The parent never calls ``killpg``. If the guardian has already died, writing its pipe fails safely
+and cleanup accepts a possible leak rather than risking a signal to a recycled process-group ID.
 """
-Module-level process group registry with atexit cleanup.
-
-Safety net for orphaned child processes when the parent exits without
-calling cancel() — e.g. when asyncio.run() converts SIGINT into
-CancelledError and the KeyboardInterrupt handler never fires.
-
-Adapter subprocess groups and model-discovery group sentinels register their
-leader PID here. Normal teardown removes it; if any entries remain at
-interpreter shutdown, atexit kills those groups.
-
-`release_process` is the stream counterpart to that registration: every
-adapter's `stream()` calls it from a `finally`, so it covers the exception and
-abandoned-consumer paths as well as the normal one. Model discovery owns its
-short-lived sentinel and tears down that whole group after every call.
-
-That `finally` is not, however, a guarantee that teardown has happened by
-the time the consumer moves on. CPython does not run an async generator's
-`finally` synchronously when a consumer `break`s out of an `async for`; it
-schedules the generator's aclose() as a separate async_generator_athrow
-task, and the child stays alive and registered until that task gets a turn.
-
-asyncio.run() does give it one. It calls loop.shutdown_asyncgens() before
-closing the loop, so the teardown runs — measured: a break-and-abandon under
-asyncio.run() leaves the registry empty, while the same coroutine on a
-hand-rolled loop closed without shutdown_asyncgens() leaves an entry behind.
-So the atexit net is not covering the ordinary program; it covers the loop
-nobody shut down properly, plus any exit that never unwinds the generator at
-all. A narrower job than it used to claim, and still the reason the net
-exists now that `stream()` has a `finally`.
-"""
+import asyncio
 import atexit
+import contextlib
 import logging
 import os
+import subprocess
+import sys
+from dataclasses import dataclass
+
 
 logger = logging.getLogger("agent_shell.process_cleanup")
 
-_active_process_groups: set[int] = set()
+_KILL_GROUP = b"K"
+_RELEASE_GROUP = b"R"
+
+_GROUP_GUARDIAN = """
+import os
+import signal
+
+command = os.read(0, 1)
+if command == b"R":
+    raise SystemExit(0)
+os.kill(0, signal.SIGKILL)
+"""
 
 
-def register_process_group(pgid: int) -> None:
-    _active_process_groups.add(pgid)
+@dataclass(slots=True)
+class _GroupGuardian:
+    process: subprocess.Popen
+    control_fd: int
+
+    @property
+    def pid(self) -> int:
+        return self.process.pid
 
 
-def unregister_process_group(pgid: int) -> None:
-    _active_process_groups.discard(pgid)
+# Process objects have stable identity even after their numeric PIDs are reaped and reused.
+_guardians: dict[asyncio.subprocess.Process, _GroupGuardian] = {}
 
 
-def _group_is_ours(pid: int) -> bool:
-    """True when process group `pid` looks like one this registry is responsible for.
-
-    "Looks like": the second shape below cannot tell our orphans from a stranger's, so this is a
-    best-effort identification, not a proof of ownership. See the caveat under that shape.
-
-    Two shapes qualify, and nothing else does.
-
-    `os.getpgid(pid) == pid` — the child is still alive and still leads its own group. Adapter
-    runs use `setsid`; model discovery uses a dedicated leader created with `process_group=0`.
-    In both cases pgid == pid for as long as the registered leader is ours.
-    The kernel is free to hand the number to anyone the moment the child watcher's os.waitpid()
-    reaps it, and a recycled pid resolves through os.getpgid() to a group we have no business
-    killing — an adversarial run forced a pid wrap and watched an unrelated process die by
-    signal 9. The check is not a proof of identity (a recycled pid may itself lead a group), but
-    it narrows the target from "any process that inherits this number" to "one that also happens
-    to be a group leader".
-
-    getpgid() raises ESRCH but `killpg(pid, 0)` succeeds — no process holds `pid` at all, yet
-    process group `pid` still has live members. That is the shape our child's orphaned
-    grandchildren leave behind: a group numbered N can only be created by the process whose pid
-    was N, either by setsid() or setpgid(), and the kernel refuses both a fabricated group
-    number and an attempt to join a group in another session.
-
-    It is not only our shape, and it is not a narrower version of the case above — the two do
-    not overlap at all, because the first needs pid N alive and this one needs it dead. Any
-    double-forking daemon leaves identical remains: setsid(), fork a worker, exit, get reaped,
-    and group N is now a stranger's with no leader. Reproduced, not theorised — this function
-    returned True for such a group that this registry had never heard of, and the worker died
-    by signal 9. This branch can vouch for a total stranger.
-
-    What justifies it is a count, not an argument. A scan of one Linux desktop found 94 live
-    process group leaders against a single orphaned group, so the extra exposure is on the
-    order of 1% of what the case above already carries — paid to reach orphans that otherwise
-    leak forever. Empirically narrow, not logically narrow, and if the recycled-pid exposure is
-    ever closed properly both branches should be revisited together.
-
-    A probe that raises is not ours either way: ESRCH means the group is gone, and EPERM means
-    no member of it is signalable by us, which our own descendants always are.
-    """
+def _send_guardian_command(guardian: _GroupGuardian, command: bytes) -> None:
     try:
-        return os.getpgid(pid) == pid
-    except ProcessLookupError:
-        pass
+        os.write(guardian.control_fd, command)
+    except OSError as error:
+        logger.warning("Could not contact process-group guardian: %s", error)
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(guardian.control_fd)
+
+    # subprocess.Popen, rather than asyncio, owns this direct child. Waiting here reaps that
+    # exact child; the PID is never used to choose a process or group to signal.
+    with contextlib.suppress(OSError, ChildProcessError):
+        guardian.process.wait()
+
+
+def _start_guardian() -> _GroupGuardian:
+    read_fd, write_fd = os.pipe()
+    argv = [sys.executable, "-I", "-S", "-c", _GROUP_GUARDIAN]
 
     try:
-        os.killpg(pid, 0)
-    except OSError:
-        return False
-    return True
+        process = subprocess.Popen(
+            argv,
+            stdin=read_fd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            process_group=0,
+        )
+    except BaseException:
+        os.close(write_fd)
+        raise
+    finally:
+        os.close(read_fd)
+
+    return _GroupGuardian(process=process, control_fd=write_fd)
 
 
-def kill_process_group(pid: int) -> None:
-    """SIGKILL the process group led by `pid`, then drop its registry entry.
-
-    Signals only a group `_group_is_ours` vouches for, which covers both the live child and the
-    child that has been reaped out from under its own still-running grandchildren — and, on
-    that second shape, a stranger's group that happens to look the same. See `_group_is_ours`.
-
-    Unregisters by pid, matching register_process_group(process.pid) at spawn time rather than
-    the getpgid()-derived pgid, and does so even when the process has already exited — issue #8:
-    a process that exits on its own right before cancel() runs must not leave a stale entry.
-
-    Never raises. It runs from a `finally` while a GeneratorExit is in flight, where an escaping
-    exception masks the one already being handled.
-    """
+async def create_grouped_process(
+    command: list[str],
+    cwd: str,
+    *,
+    env: dict[str, str] | None = None,
+    stdin: int = asyncio.subprocess.DEVNULL,
+) -> asyncio.subprocess.Process:
+    """Start a command in a process group owned by an exact guardian pipe."""
+    guardian = _start_guardian()
     try:
-        if _group_is_ours(pid):
-            os.killpg(pid, 9)
-    except ProcessLookupError:
-        pass  # gone between the check and the kill: nothing left to kill, nothing to recover
-    except OSError as e:
-        # The group may still be running and we could not signal it (EPERM is what a pid
-        # recycled onto another user's process gives). Keep the registry entry so
-        # cleanup_process_groups() gets one more attempt at interpreter exit: an orphan
-        # dropped from every recovery path is worse than a stale entry.
-        logger.warning("Could not kill process group for pid %s: %s", pid, e)
-        return
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdin=stdin,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+            process_group=guardian.pid,
+        )
+    except BaseException:
+        _send_guardian_command(guardian, _KILL_GROUP)
+        raise
 
-    unregister_process_group(pid)
+    _guardians[process] = guardian
+    return process
 
 
-def release_process(process, active_processes: list, stderr_task, *,
-                    child_exited: bool) -> None:
-    """Release everything a `stream()` owns for `process`. Safe on every exit path.
+def release_process_group(process: asyncio.subprocess.Process) -> None:
+    """Stop the guardian without signalling leftovers from a completed CLI."""
+    guardian = _guardians.pop(process, None)
+    if guardian is not None:
+        _send_guardian_command(guardian, _RELEASE_GROUP)
 
-    `child_exited` is the caller's own record of which exit path it took: True only once it
-    has `await`ed the child, so the child has definitely terminated. It is a required keyword
-    argument because this used to be inferred from `process.returncode`, and that inference is
-    unsound. CPython's ThreadedChildWatcher._do_waitpid() calls os.waitpid() — reaping the
-    child and freeing its pid for the kernel to hand out again — and only afterwards schedules
-    the callback that sets `returncode`. Between those two, `returncode is None` describes a
-    child that is already gone and a pid that may already belong to someone else.
 
-      - child_exited, or returncode already set -> the child has terminated. Nothing to kill;
-        just drop the registry entry. (returncode being set is positive proof of death even
-        though its absence proves nothing, so it is worth a second look.) Note what this path
-        does NOT do: a CLI that left subprocesses of its own running is not signalled, and
-        dropping the entry also takes those grandchildren out of the atexit net, so they leak
-        with nothing left to find them by. Deliberate for now — an adapter may legitimately
-        leave a server running — and tracked as its own issue. The orphaned-group recovery in
-        `_group_is_ours` applies to the abandoned path below, not to this one.
-      - otherwise -> the stream was abandoned mid-flight and, as far as anything here can
-        tell, the child is still running. Nobody is draining its pipes any more, so
-        `await process.wait()` here could block until a pipe buffer fills, or forever. Kill
-        the group instead.
+def kill_process_group(process: asyncio.subprocess.Process) -> None:
+    """Ask the process's exact guardian to SIGKILL its own group."""
+    guardian = _guardians.pop(process, None)
+    if guardian is not None:
+        _send_guardian_command(guardian, _KILL_GROUP)
 
-    The second case routinely fires on a child that is already dead, and that is the norm
-    rather than a residual race. Measured over 25 runs of the documented break-and-then-work
-    pattern, with 0.15s of synchronous work after the `break`: 25/25 teardowns took the kill
-    branch, and 25/25 found the pid already reaped and freed. CPython queues the generator's
-    async_generator_athrow task AT the `break`, ahead of the child watcher's callback that sets
-    `returncode`, while the watcher's os.waitpid() runs on its own thread — so the pid is
-    handed back to the kernel while `returncode` still reads None, and no synchronous check
-    here can tell. On essentially every break-and-then-work usage, `_group_is_ours` is the only
-    thing standing between this call and whoever holds that number now.
 
-    Deliberately synchronous: this runs while a generator is being closed or cancelled, where an
-    await can hang or raise and turn cleanup into a second failure. The child is reaped by
-    asyncio's child watcher, so no wait() is needed to avoid a zombie.
-
-    Idempotent, so it cannot conflict with a concurrent `cancel()` doing the same teardown: the
-    list removal is guarded, `unregister_process_group` discards, and `kill_process_group`
-    swallows an already-dead child.
-    """
+def release_process(
+    process: asyncio.subprocess.Process,
+    active_processes: list,
+    stderr_task,
+    *,
+    child_exited: bool,
+) -> None:
+    """Release the resources owned by one adapter stream on every exit path."""
     if not stderr_task.done():
         stderr_task.cancel()
 
@@ -178,38 +144,15 @@ def release_process(process, active_processes: list, stderr_task, *,
         active_processes.remove(process)
 
     if child_exited or process.returncode is not None:
-        unregister_process_group(process.pid)
+        release_process_group(process)
     else:
-        kill_process_group(process.pid)
+        kill_process_group(process)
 
 
 def cleanup_process_groups() -> None:
-    """Kill every registered process group. Called by atexit.
-
-    Delegates to kill_process_group so both teardown paths share one rule about what may be
-    signalled and one policy for what to do when the kill fails. This used to killpg() the
-    registered number unguarded, which mattered more after kill_process_group started keeping
-    the registry entry on a failed kill: that deliberately routes recovery traffic here, so an
-    unguarded body here would hand every recycled pid a second chance to kill a stranger.
-
-    The entries are pids, not getpgid()-derived pgids. Adapter children use `setsid`, while
-    model discovery registers a leader created with `process_group=0`; both make pgid == pid.
-    By interpreter exit that number proves very little on its own: the leader may be reaped and
-    pid may belong to anyone, so `_group_is_ours` is doing the load-bearing work and signalling
-    the registered number directly would be reckless.
-
-    Expect this to find nothing most runs. Every path that completes removes its registration:
-    normal streams unregister without killing, while model discovery tears down its temporary
-    group. What survives is only teardown that never ran. An orphaned group can turn up, but it
-    is the exception, not the reason for delegating.
-
-    Never raises: atexit has nowhere to report an exception, and one bad entry must not abandon
-    the rest of the registry. kill_process_group swallows everything, and the final clear runs
-    regardless — at interpreter exit there is no later attempt for a kept entry to serve.
-    """
-    for pid in list(_active_process_groups):
-        kill_process_group(pid)
-    _active_process_groups.clear()
+    """Ask every still-registered guardian to kill its group during interpreter exit."""
+    for process in list(_guardians):
+        kill_process_group(process)
 
 
 atexit.register(cleanup_process_groups)

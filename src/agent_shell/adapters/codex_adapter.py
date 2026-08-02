@@ -6,9 +6,18 @@ import os
 import warnings
 from typing import AsyncIterator
 
-from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, MCPServerType, HealthCheckResult
-from agent_shell.process_cleanup import (register_process_group, kill_process_group,
-                                         release_process)
+from agent_shell.models.agent import (
+    AgentResponse,
+    HealthCheckResult,
+    MCPServerSpec,
+    MCPServerType,
+    StreamEvent,
+)
+from agent_shell.process_cleanup import (
+    create_grouped_process,
+    kill_process_group,
+    release_process,
+)
 from agent_shell.adapters.health import run_health_probe
 from agent_shell.adapters.model_discovery import decode_model_output, run_model_command
 from agent_shell.adapters.response import collect_response
@@ -117,17 +126,12 @@ class CodexAdapter:
         logger.debug("Command: %s", cmd)
         logger.info("Process started (cwd=%s)", os.path.abspath(cwd))
 
-        process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=os.path.abspath(cwd),
-                preexec_fn=os.setsid,
+        process = await create_grouped_process(
+            cmd,
+            cwd=os.path.abspath(cwd),
         )
 
         self._active_processes.append(process)
-        register_process_group(process.pid)
 
         # Drain stderr concurrently with stdout. Reading it only after the stdout loop can
         # deadlock: a child that fills its stderr pipe buffer (~64KB) mid-run blocks on that
@@ -279,7 +283,7 @@ class CodexAdapter:
 
     async def cancel(self) -> None:
         for process in self._active_processes:
-            kill_process_group(process.pid)
+            kill_process_group(process)
         self._active_processes.clear()
 
     async def health_check(

@@ -1,12 +1,7 @@
-"""End-to-end process lifecycle: real adapters, real child processes, real signals.
+"""End-to-end process lifecycle with real children, guardians, pipes, and signals.
 
-Every other teardown test in the suite patches os.getpgid/os.killpg and hands
-release_process a MagicMock whose `pid` is a number no process ever had. That is what let
-B1 through: the code inferred "still running" from `process.returncode is None`, which is
-false for a child the asyncio child watcher has already reaped, and no mock could show it.
-
-These tests spawn genuine children via a fake CLI on PATH and let the real teardown run
-against them, so what is asserted is what the kernel actually did.
+The fake CLIs avoid network calls, but process creation and cleanup are real. Tests observe death
+through process status and kernel-held locks rather than mocked signal calls.
 """
 import asyncio
 import contextlib
@@ -20,8 +15,8 @@ import time
 import pytest
 
 from agent_shell.models.agent import AgentType
+from agent_shell import process_cleanup
 from agent_shell.process_cleanup import (
-    _active_process_groups,
     cleanup_process_groups,
     kill_process_group,
 )
@@ -35,6 +30,16 @@ from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
 from agent_shell.adapters.pi_adapter import PiAdapter
 
 from tests.unit.adapter_matrix import ADAPTERS, OK_RESULT_EVENT
+
+# Adapter class to the public selector used by AgentShell.
+AGENT_TYPE = {
+    ClaudeCodeAdapter: AgentType.CLAUDE_CODE,
+    CodexAdapter: AgentType.CODEX,
+    OpenCodeAdapter: AgentType.OPENCODE,
+    CopilotCLIAdapter: AgentType.COPILOT_CLI,
+    PiAdapter: AgentType.PI,
+    CursorAdapter: AgentType.CURSOR,
+}
 
 # The executable name each adapter puts at argv[0].
 CLI_NAME = {
@@ -56,8 +61,8 @@ CLI_NAME = {
 # death directly rather than inferring it from a pid that may have been recycled.
 #
 # The grandchild gets DEVNULL for all three streams rather than inheriting the child's pipes.
-# It stays in the process group the child created with setsid, which is the only thing these
-# tests are about, but it no longer holds the child's stdout and stderr open — and asyncio
+# It stays in the guardian-owned process group, but it no longer holds the child's stdout and
+# stderr open — and asyncio
 # resolves `Process.wait()` from `_call_connection_lost`, which `_try_finish` only reaches once
 # `all(p.disconnected ...)`. Inheriting the pipes therefore gated the child's `wait()` on the
 # grandchild's 60s lifetime, which is why awaiting the child used to be a trap. On DEVNULL it
@@ -182,20 +187,220 @@ def _pid_is_gone(pid: int) -> bool:
     return False
 
 
+async def test_normal_release_stops_guardian_without_killing_leftovers(tmp_path):
+    # Arrange — a successful CLI may intentionally leave a server running. Releasing its
+    # guardian must preserve that existing behaviour rather than killing the whole group.
+    lock_file = tmp_path / "released-grandchild.lock"
+    grandchild_script = (
+        "import fcntl, sys, time\n"
+        "f = open(sys.argv[1], 'w')\n"
+        "fcntl.flock(f, fcntl.LOCK_EX)\n"
+        "time.sleep(60)\n"
+    )
+    script = (
+        "import subprocess, sys\n"
+        f"grandchild_script = {grandchild_script!r}\n"
+        "child = subprocess.Popen(\n"
+        "    [sys.executable, '-c', grandchild_script, sys.argv[1]],\n"
+        "    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        ")\n"
+        "print(child.pid, flush=True)\n"
+    )
+    process = await process_cleanup.create_grouped_process(
+        [sys.executable, "-c", script, str(lock_file)],
+        cwd=str(tmp_path),
+    )
+    grandchild_pid = int((await process.stdout.readline()).strip())
+
+    try:
+        assert await _wait_until(lambda: _lock_is_held(str(lock_file)))
+        await process.wait()
+
+        # Act
+        process_cleanup.release_process_group(process)
+
+        # Assert
+        assert _lock_is_held(str(lock_file)), "normal release killed a leftover process"
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(grandchild_pid, signal.SIGKILL)
+        await _wait_until(lambda: not _lock_is_held(str(lock_file)))
+
+
+async def test_guardian_does_not_inherit_the_owners_file_descriptors(tmp_path):
+    # Arrange — make one descriptor explicitly inheritable to cover FDs opened outside Python's
+    # normal CLOEXEC defaults, as a native extension might do.
+    inherited_path = tmp_path / "must-not-be-inherited"
+    inherited_fd = os.open(inherited_path, os.O_CREAT | os.O_WRONLY, 0o600)
+    os.set_inheritable(inherited_fd, True)
+    process = await process_cleanup.create_grouped_process(
+        ["sleep", "60"],
+        cwd=str(tmp_path),
+    )
+    guardian = process_cleanup._guardians[process]
+
+    try:
+        # Act
+        guardian_fds = {
+            fd: os.readlink(f"/proc/{guardian.pid}/fd/{fd}")
+            for fd in os.listdir(f"/proc/{guardian.pid}/fd")
+        }
+
+        # Assert — a guardian must not keep an owner's output pipe, log, or native FD open.
+        assert guardian_fds["1"] == "/dev/null"
+        assert guardian_fds["2"] == "/dev/null"
+        assert str(inherited_path) not in guardian_fds.values()
+    finally:
+        os.close(inherited_fd)
+        kill_process_group(process)
+        await process.wait()
+
+
+async def test_dead_guardian_fails_safe_without_signalling_by_group_number(tmp_path):
+    # Arrange — if the exact guardian has died, its pipe is the only trustworthy ownership
+    # handle. Cleanup must accept a leak rather than fall back to a potentially recycled PGID.
+    process = await process_cleanup.create_grouped_process(
+        ["sleep", "60"],
+        cwd=str(tmp_path),
+    )
+    guardian = process_cleanup._guardians[process]
+    guardian.process.kill()
+    guardian.process.wait()
+
+    try:
+        # Act
+        kill_process_group(process)
+        await asyncio.sleep(0.05)
+
+        # Assert
+        assert process.returncode is None, "cleanup signalled the group after ownership was lost"
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        await process.wait()
+
+
+async def test_guardian_kills_group_when_owner_interpreter_disappears(tmp_path):
+    # Arrange — run AgentShell in a separate interpreter and use os._exit() to bypass both
+    # async-generator cleanup and atexit. Closing the private pipe must still trigger cleanup.
+    lock_file = tmp_path / "interpreter-exit.lock"
+    ready_file = tmp_path / "interpreter-exit.ready"
+    child_pid_file = tmp_path / "interpreter-exit-child.pid"
+    grandchild_pid_file = tmp_path / "interpreter-exit-grandchild.pid"
+    grandchild_script = (
+        "import fcntl, os, sys, time\n"
+        "f = open(sys.argv[1], 'w')\n"
+        "fcntl.flock(f, fcntl.LOCK_EX)\n"
+        "open(sys.argv[2], 'w').close()\n"
+        "open(sys.argv[3], 'w').write(str(os.getpid()))\n"
+        "time.sleep(60)\n"
+    )
+    cli_script = (
+        "import subprocess, sys, time\n"
+        f"grandchild_script = {grandchild_script!r}\n"
+        "subprocess.Popen(\n"
+        "    [sys.executable, '-c', grandchild_script, *sys.argv[1:]],\n"
+        "    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        ")\n"
+        "time.sleep(60)\n"
+    )
+    owner_script = (
+        "import asyncio, os, sys\n"
+        "from agent_shell.process_cleanup import create_grouped_process\n"
+        "async def main():\n"
+        f"    cli_script = {cli_script!r}\n"
+        "    process = await create_grouped_process(\n"
+        "        [sys.executable, '-c', cli_script, *sys.argv[1:4]],\n"
+        "        cwd=os.getcwd(),\n"
+        "    )\n"
+        "    open(sys.argv[4], 'w').write(str(process.pid))\n"
+        "    while not os.path.exists(sys.argv[2]):\n"
+        "        await asyncio.sleep(0.01)\n"
+        "    os._exit(0)\n"
+        "asyncio.run(main())\n"
+    )
+    owner = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        owner_script,
+        str(lock_file),
+        str(ready_file),
+        str(grandchild_pid_file),
+        str(child_pid_file),
+        cwd=os.getcwd(),
+    )
+
+    child_pid = None
+    grandchild_pid = None
+    try:
+        # Act
+        await asyncio.wait_for(owner.wait(), timeout=5.0)
+        child_pid = int(child_pid_file.read_text())
+        grandchild_pid = int(grandchild_pid_file.read_text())
+
+        # Assert
+        assert ready_file.exists(), "grandchild was never confirmed alive"
+        assert await _wait_until(lambda: not _lock_is_held(str(lock_file)))
+        assert await _reaped(child_pid)
+        assert await _reaped(grandchild_pid)
+    finally:
+        for pid in (child_pid, grandchild_pid):
+            if pid is not None:
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGKILL)
+
+
+async def test_owned_group_is_killed_through_its_guardian(tmp_path):
+    # Arrange — exercise the real ownership mechanism with a child and grandchild. The lock is
+    # independent evidence that the grandchild is alive; losing it proves the whole group died.
+    lock_file = tmp_path / "guardian-grandchild.lock"
+    grandchild_script = (
+        "import fcntl, sys, time\n"
+        "f = open(sys.argv[1], 'w')\n"
+        "fcntl.flock(f, fcntl.LOCK_EX)\n"
+        "time.sleep(60)\n"
+    )
+    script = (
+        "import subprocess, sys, time\n"
+        f"grandchild_script = {grandchild_script!r}\n"
+        "subprocess.Popen(\n"
+        "    [sys.executable, '-c', grandchild_script, sys.argv[1]],\n"
+        "    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        ")\n"
+        "time.sleep(60)\n"
+    )
+    process = await process_cleanup.create_grouped_process(
+        [sys.executable, "-c", script, str(lock_file)],
+        cwd=str(tmp_path),
+    )
+
+    try:
+        assert await _wait_until(lambda: _lock_is_held(str(lock_file))), (
+            "grandchild never took the lock that marks it alive"
+        )
+
+        # Act
+        kill_process_group(process)
+        await asyncio.wait_for(process.wait(), timeout=5.0)
+
+        # Assert
+        assert process.returncode == -signal.SIGKILL
+        assert await _wait_until(lambda: not _lock_is_held(str(lock_file)))
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        await process.wait()
+
+
 @pytest.mark.parametrize("adapter_cls", ADAPTERS)
-async def test_completed_stream_kills_nothing_and_leaves_nothing_registered(
-        adapter_cls, fake_cli, tmp_path, monkeypatch):
-    # Arrange — B1: on the normal path the child is awaited, so it has certainly exited and
-    # its pid may already have been recycled. Teardown must not signal anything at all. This
-    # is asserted against a real pid rather than a MagicMock's, because the whole defect was
-    # a claim about what a real pid means.
+async def test_completed_stream_leaves_nothing_registered(
+        adapter_cls, fake_cli, tmp_path):
+    # Arrange — normal completion must release the exact guardian handle after reaping the CLI.
     adapter = adapter_cls()
     fake_cli(stdout=[OK_RESULT_EVENT[adapter_cls]])
-    _active_process_groups.clear()
-
-    signals = []
-    monkeypatch.setattr("agent_shell.process_cleanup.os.killpg",
-                        lambda pgid, sig: signals.append((pgid, sig)))
 
     # Act
     child = None
@@ -207,13 +412,49 @@ async def test_completed_stream_kills_nothing_and_leaves_nothing_registered(
 
     # Assert
     assert any(e.type == "result" for e in events), "fake CLI did not drive a full run"
-    assert signals == [], f"teardown signalled a process group after a clean exit: {signals}"
     assert child.returncode is not None, "child was not reaped on the normal path"
     assert adapter._active_processes == []
-    assert child.pid not in _active_process_groups
+    assert child not in process_cleanup._guardians
 
-    # Cleanup
-    _active_process_groups.clear()
+
+@pytest.mark.parametrize("adapter_cls", ADAPTERS)
+async def test_cancelled_agent_shell_stream_kills_the_real_process_tree(
+        adapter_cls, fake_cli, tmp_path):
+    # Arrange — drive cancellation through the public AgentShell boundary. The CLI publishes its
+    # grandchild before emitting a result and then hangs, so cancellation has a real tree to stop.
+    shell = AgentShell(agent_type=AGENT_TYPE[adapter_cls])
+    pid_file = tmp_path / "cancelled-grandchild.pid"
+    fake_cli(
+        stdout=[OK_RESULT_EVENT[adapter_cls]],
+        hang=True,
+        grandchild_pid_file=str(pid_file),
+    )
+
+    async def consume_stream():
+        async for _ in shell.stream(cwd=str(tmp_path), prompt="ping"):
+            pass
+
+    task = asyncio.create_task(consume_stream())
+    grandchild_pid = None
+    try:
+        assert await _wait_until(pid_file.exists), "fake CLI never started its grandchild"
+        grandchild_pid = int(pid_file.read_text())
+
+        # Act
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # Assert
+        assert await _reaped(grandchild_pid), "cancelled stream left its grandchild running"
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        if grandchild_pid is not None:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(grandchild_pid, signal.SIGKILL)
 
 
 @pytest.mark.parametrize("adapter_cls", ADAPTERS)
@@ -221,20 +462,18 @@ async def test_abandoned_stream_really_kills_the_child_and_its_grandchild(
         adapter_cls, fake_cli, tmp_path):
     # Arrange — the other half of the contract, and the guard against over-correcting B1 into
     # never killing anything: a consumer that walks away from a live child must take down the
-    # whole session, grandchildren included. That is why teardown uses killpg on a setsid'd
-    # child rather than signalling the pid. Real signals here, nothing patched.
+    # guardian-owned group, grandchildren included. Real processes and signals are used here.
     adapter = adapter_cls()
     pid_file = tmp_path / "grandchild.pid"
     fake_cli(stdout=[OK_RESULT_EVENT[adapter_cls]], hang=True,
              grandchild_pid_file=str(pid_file))
-    _active_process_groups.clear()
 
     agen = adapter.stream(cwd=str(tmp_path), prompt="ping")
     await agen.__anext__()
     child = adapter._active_processes[0]
     grandchild_pid = int(pid_file.read_text())
     assert child.returncode is None, "child exited before the abandonment under test"
-    assert child.pid in _active_process_groups
+    assert child in process_cleanup._guardians
 
     # Act — aclose() is what CPython eventually runs for a consumer that `break`s out of the
     # `async for`; calling it directly removes the scheduling delay described below.
@@ -245,25 +484,17 @@ async def test_abandoned_stream_really_kills_the_child_and_its_grandchild(
     assert child.returncode != 0, "abandoned child was not killed"
     assert await _reaped(grandchild_pid), "grandchild outlived the process group kill"
     assert adapter._active_processes == []
-    assert child.pid not in _active_process_groups
-
-    # Cleanup
-    _active_process_groups.clear()
+    assert child not in process_cleanup._guardians
 
 
 async def test_cleanup_kills_the_grandchildren_of_an_already_reaped_child(fake_cli, tmp_path):
-    # Arrange — the leak the getpgid(pid) == pid guard used to accept. The CLI exits on its
-    # own and the child watcher reaps it, so no process holds its pid any more and
-    # os.getpgid() raises. Its grandchild is still running, still in the process group the
-    # child created with setsid, and that group is now the only handle on it. This bites
-    # hardest on the atexit path — by interpreter exit the child has usually been reaped —
-    # so cleanup_process_groups() is what gets called here.
+    # Arrange — the CLI exits and is reaped while its grandchild remains in the group. The
+    # guardian pipe must retain exact ownership after the CLI's numeric PID becomes reusable.
     adapter = ClaudeCodeAdapter()
     pid_file = tmp_path / "grandchild.pid"
     lock_file = tmp_path / "grandchild.lock"
     fake_cli(stdout=[OK_RESULT_EVENT[ClaudeCodeAdapter]],
              grandchild_pid_file=str(pid_file), grandchild_lock_file=str(lock_file))
-    _active_process_groups.clear()
 
     agen = adapter.stream(cwd=str(tmp_path), prompt="ping")
     await agen.__anext__()
@@ -284,7 +515,7 @@ async def test_cleanup_kills_the_grandchildren_of_an_already_reaped_child(fake_c
         # Bounded so that regression fails in seconds rather than hanging the run.
         await asyncio.wait_for(child.wait(), timeout=5.0)
         assert _pid_is_gone(child.pid), "child was never reaped"
-        assert child.pid in _active_process_groups
+        assert child in process_cleanup._guardians
 
         # Act
         cleanup_process_groups()
@@ -293,13 +524,12 @@ async def test_cleanup_kills_the_grandchildren_of_an_already_reaped_child(fake_c
         assert await _wait_until(lambda: not _lock_is_held(str(lock_file))), \
             "grandchild outlived the cleanup: it is still holding its lock"
         assert await _reaped(grandchild_pid)
-        assert child.pid not in _active_process_groups
+        assert child not in process_cleanup._guardians
     finally:
         # Cleanup — the grandchild must never survive this test, however it ended.
         with contextlib.suppress(OSError):
             os.kill(grandchild_pid, signal.SIGKILL)
         await agen.aclose()
-        _active_process_groups.clear()
 
 
 @pytest.mark.parametrize(
@@ -366,15 +596,15 @@ async def test_successful_model_discovery_kills_a_leftover_grandchild(
     fake_cli(**spec)
     grandchild_pid = None
 
-    def kill_only_a_live_leader(pid):
-        assert os.getpgid(pid) == pid, (
-            "successful discovery tried to kill a group through a reaped leader"
+    def kill_only_an_owned_group(process):
+        assert process in process_cleanup._guardians, (
+            "successful discovery lost its exact guardian ownership handle"
         )
-        kill_process_group(pid)
+        kill_process_group(process)
 
     monkeypatch.setattr(
         "agent_shell.adapters.model_discovery.kill_process_group",
-        kill_only_a_live_leader,
+        kill_only_an_owned_group,
     )
 
     try:
@@ -407,14 +637,13 @@ async def test_teardown_after_break_is_deferred_to_a_later_loop_turn(fake_cli, t
     pid_file = tmp_path / "grandchild.pid"
     fake_cli(stdout=[OK_RESULT_EVENT[ClaudeCodeAdapter]], hang=True,
              grandchild_pid_file=str(pid_file))
-    _active_process_groups.clear()
 
     # Act
     async for event in adapter.stream(cwd=str(tmp_path), prompt="ping"):
         if event.type == "result":
             break
     child = adapter._active_processes[0]
-    still_registered_right_after_break = child.pid in _active_process_groups
+    still_registered_right_after_break = child in process_cleanup._guardians
 
     # Assert — teardown has NOT happened yet...
     assert still_registered_right_after_break, "teardown ran synchronously at the break"
@@ -422,11 +651,10 @@ async def test_teardown_after_break_is_deferred_to_a_later_loop_turn(fake_cli, t
 
     # ...and lands once the loop gets a turn.
     for _ in range(100):
-        if child.pid not in _active_process_groups:
+        if child not in process_cleanup._guardians:
             break
         await asyncio.sleep(0.01)
-    assert child.pid not in _active_process_groups, "deferred teardown never ran"
+    assert child not in process_cleanup._guardians, "deferred teardown never ran"
 
     # Cleanup
     await child.wait()
-    _active_process_groups.clear()

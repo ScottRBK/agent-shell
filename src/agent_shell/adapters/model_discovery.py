@@ -1,11 +1,7 @@
 import asyncio
 import os
-import sys
 
-from agent_shell.process_cleanup import kill_process_group, register_process_group
-
-
-_GROUP_LEADER = "import signal\nwhile True: signal.pause()"
+from agent_shell.process_cleanup import create_grouped_process, kill_process_group
 
 
 def decode_model_output(output: bytes, source: str) -> str:
@@ -23,16 +19,10 @@ async def _reap_process(process: asyncio.subprocess.Process) -> None:
         pass
 
 
-async def stop_model_processes(
-    process: asyncio.subprocess.Process,
-    group_leader: asyncio.subprocess.Process,
-) -> None:
-    """Kill the isolated discovery group through its still-live leader, then reap it."""
-    kill_process_group(group_leader.pid)
-    await asyncio.gather(
-        _reap_process(process),
-        _reap_process(group_leader),
-    )
+async def stop_model_processes(process: asyncio.subprocess.Process) -> None:
+    """Ask the exact guardian to kill the discovery group, then reap the CLI."""
+    kill_process_group(process)
+    await _reap_process(process)
 
 
 async def start_model_process(
@@ -41,40 +31,14 @@ async def start_model_process(
     *,
     env: dict[str, str] | None = None,
     stdin: int = asyncio.subprocess.DEVNULL,
-) -> tuple[asyncio.subprocess.Process, asyncio.subprocess.Process]:
-    """Start a CLI in a group whose separate leader stays alive until cleanup."""
-    absolute_cwd = os.path.abspath(cwd)
-    group_leader = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-I",
-        "-S",
-        "-c",
-        _GROUP_LEADER,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-        cwd=absolute_cwd,
+) -> asyncio.subprocess.Process:
+    """Start a discovery CLI in a group owned by an exact guardian handle."""
+    return await create_grouped_process(
+        command,
+        cwd=os.path.abspath(cwd),
         env=env,
-        process_group=0,
+        stdin=stdin,
     )
-    register_process_group(group_leader.pid)
-
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            stdin=stdin,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=absolute_cwd,
-            env=env,
-            process_group=group_leader.pid,
-        )
-    except BaseException:
-        kill_process_group(group_leader.pid)
-        await _reap_process(group_leader)
-        raise
-
-    return process, group_leader
 
 
 async def run_model_command(
@@ -86,7 +50,7 @@ async def run_model_command(
     input_data: bytes | None = None,
 ) -> tuple[int, bytes, bytes]:
     """Run a short-lived model-discovery command and clean up its whole group."""
-    process, group_leader = await start_model_process(
+    process = await start_model_process(
         command,
         cwd,
         env=env,
@@ -103,15 +67,15 @@ async def run_model_command(
             timeout=timeout,
         )
     except TimeoutError as error:
-        await stop_model_processes(process, group_leader)
+        await stop_model_processes(process)
         rendered = " ".join(command)
         raise RuntimeError(
             f"`{rendered}` timed out after {timeout:g} seconds"
         ) from error
     except BaseException:
-        await stop_model_processes(process, group_leader)
+        await stop_model_processes(process)
         raise
 
     returncode = process.returncode
-    await stop_model_processes(process, group_leader)
+    await stop_model_processes(process)
     return returncode, stdout, stderr

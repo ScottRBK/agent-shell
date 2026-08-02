@@ -31,7 +31,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent_shell.process_cleanup import _active_process_groups
+from agent_shell.process_cleanup import _guardians
 
 from tests.unit.adapter_matrix import OK_RESULT_EVENT
 
@@ -360,8 +360,7 @@ def _live_process(stdout_read):
 async def test_early_close_releases_the_child_process(adapter_cls, text_event):
     # Arrange — issue #7: teardown lived on the normal path after the stdout loop, so a
     # consumer taking only the first event left the child running, still in
-    # _active_processes and still registered for atexit cleanup. os.killpg/os.getpgid are
-    # patched because LIVE_PID is not a real child of this test process.
+    # _active_processes and still registered for guardian cleanup.
     adapter = adapter_cls()
     pending = [(json.dumps(text_event("hi"), ensure_ascii=False) + "\n").encode("utf-8")]
     never = asyncio.Event()
@@ -373,25 +372,20 @@ async def test_early_close_releases_the_child_process(adapter_cls, text_event):
         return b""
 
     process = _live_process(stdout_read)
-    _active_process_groups.clear()
 
     # Act — take the first event, then abandon the stream.
-    with patch("agent_shell.process_cleanup.os.getpgid", return_value=LIVE_PID), \
-         patch("agent_shell.process_cleanup.os.killpg") as mock_killpg, \
-         patch("asyncio.create_subprocess_exec", return_value=process):
+    with patch("asyncio.create_subprocess_exec", return_value=process):
         agen = adapter.stream(cwd="/tmp", prompt="x")
         first = await agen.__anext__()
         assert first.type == "text"
         await agen.aclose()
 
-    # Assert — the abandoned child is killed, dropped from _active_processes and
-    # unregistered, not merely left with its stderr drain cancelled.
-    mock_killpg.assert_called_once_with(LIVE_PID, 9)
+    # Assert — the abandoned child is dropped from both active collections. Real-signal
+    # integration coverage proves the guardian kills the process tree.
     assert adapter._active_processes == [], "abandoned process left in _active_processes"
-    assert LIVE_PID not in _active_process_groups, "abandoned process group left registered"
+    assert process not in _guardians, "abandoned process group left registered"
 
     # Cleanup
-    _active_process_groups.clear()
 
 
 def _release_spy(adapter):
@@ -467,20 +461,15 @@ async def test_transport_error_releases_the_child_process(adapter_cls, text_even
         raise OSError("stdout pipe broke")
 
     process = _live_process(stdout_read)
-    _active_process_groups.clear()
 
     # Act
-    with patch("agent_shell.process_cleanup.os.getpgid", return_value=LIVE_PID), \
-         patch("agent_shell.process_cleanup.os.killpg") as mock_killpg, \
-         patch("asyncio.create_subprocess_exec", return_value=process), \
+    with patch("asyncio.create_subprocess_exec", return_value=process), \
          pytest.raises(OSError):
         async for _ in adapter.stream(cwd="/tmp", prompt="x"):
             pass
 
     # Assert
-    mock_killpg.assert_called_once_with(LIVE_PID, 9)
     assert adapter._active_processes == [], "process left in _active_processes after error"
-    assert LIVE_PID not in _active_process_groups, "process group left registered after error"
+    assert process not in _guardians, "process group left registered after error"
 
     # Cleanup
-    _active_process_groups.clear()

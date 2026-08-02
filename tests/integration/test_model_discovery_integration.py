@@ -8,8 +8,7 @@ from agent_shell.models.agent import AgentType
 from agent_shell.shell import AgentShell
 
 
-# Above Linux's maximum pid_max, so real process-group guards cannot target a live process.
-MOCK_GROUP_PID = 999_999_998
+# Above Linux's maximum pid_max, so test process IDs cannot identify a live process.
 MOCK_DISCOVERY_PID = 999_999_999
 
 
@@ -53,14 +52,6 @@ def _make_completed_process(
     process.kill = MagicMock()
     process.wait = AsyncMock()
     process.pid = MOCK_DISCOVERY_PID
-    return process
-
-
-def _make_group_leader_process():
-    process = AsyncMock()
-    process.returncode = None
-    process.wait = AsyncMock(return_value=0)
-    process.pid = MOCK_GROUP_PID
     return process
 
 
@@ -157,14 +148,13 @@ class TestModelDiscoveryIntegration:
             self, agent_type, selector, model_flag):
         # Arrange
         shell = AgentShell(agent_type=agent_type)
-        group_leader = _make_group_leader_process()
         discovery_process = _make_discovery_process(agent_type, selector)
         stream_process = _make_empty_stream_process()
 
         # Act
         with patch(
             "asyncio.create_subprocess_exec",
-            side_effect=[group_leader, discovery_process, stream_process],
+            side_effect=[discovery_process, stream_process],
         ) as mock_exec:
             models = await shell.list_models(cwd="/tmp")
             async for _ in shell.stream(
@@ -214,7 +204,7 @@ class TestModelDiscoveryIntegration:
         ) as mock_kill_group:
             with pytest.raises(RuntimeError, match="opencode models.*timed out"):
                 await shell.list_models(cwd="/tmp", timeout=0.01)
-        mock_kill_group.assert_called_once_with(process.pid)
+        mock_kill_group.assert_called_once_with(process)
 
     async def test_discovery_kills_the_process_on_keyboard_interrupt(self):
         # Arrange
@@ -229,7 +219,7 @@ class TestModelDiscoveryIntegration:
         ) as mock_kill_group:
             with pytest.raises(KeyboardInterrupt):
                 await shell.list_models(cwd="/tmp")
-        mock_kill_group.assert_called_once_with(process.pid)
+        mock_kill_group.assert_called_once_with(process)
 
     async def test_cursor_returns_exact_selectable_model_strings(self):
         # Arrange
@@ -487,7 +477,7 @@ class TestModelDiscoveryIntegration:
         ) as mock_kill_group:
             with pytest.raises(RuntimeError, match="timed out after 0.01 seconds"):
                 await shell.list_models(cwd="/tmp", timeout=0.01)
-        mock_kill_group.assert_called_once_with(process.pid)
+        mock_kill_group.assert_called_once_with(process)
         process.terminate.assert_not_called()
 
     async def test_copilot_cancellation_during_shutdown_kills_the_process_group(self):
@@ -522,7 +512,7 @@ class TestModelDiscoveryIntegration:
             ) as mock_kill_group:
                 with pytest.raises(asyncio.CancelledError):
                     await shell.list_models(cwd="/tmp")
-            mock_kill_group.assert_called_once_with(process.pid)
+            mock_kill_group.assert_called_once_with(process)
             assert stderr_cancelled.is_set()
         finally:
             release_stderr.set()

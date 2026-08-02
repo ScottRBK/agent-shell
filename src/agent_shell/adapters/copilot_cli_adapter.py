@@ -7,10 +7,16 @@ import warnings
 from pathlib import Path
 from typing import AsyncIterator
 
-from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, MCPServerType, HealthCheckResult
+from agent_shell.models.agent import (
+    AgentResponse,
+    HealthCheckResult,
+    MCPServerSpec,
+    MCPServerType,
+    StreamEvent,
+)
 from agent_shell.process_cleanup import (
+    create_grouped_process,
     kill_process_group,
-    register_process_group,
     release_process,
 )
 from agent_shell.adapters.health import run_health_probe
@@ -195,17 +201,12 @@ class CopilotCLIAdapter:
         logger.debug("Command: %s", cmd)
         logger.info("Process started (cwd=%s)", os.path.abspath(cwd))
 
-        process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=os.path.abspath(cwd),
-                preexec_fn=os.setsid,
+        process = await create_grouped_process(
+            cmd,
+            cwd=os.path.abspath(cwd),
         )
 
         self._active_processes.append(process)
-        register_process_group(process.pid)
 
         # Drain stderr concurrently with stdout. Reading it only after the stdout loop can
         # deadlock: a child that fills its stderr pipe buffer (~64KB) mid-run blocks on that
@@ -348,7 +349,7 @@ class CopilotCLIAdapter:
 
     async def cancel(self) -> None:
         for process in self._active_processes:
-            kill_process_group(process.pid)
+            kill_process_group(process)
         self._active_processes.clear()
 
     async def health_check(
@@ -365,7 +366,7 @@ class CopilotCLIAdapter:
             timeout: float = 30.0,
     ) -> list[str]:
         cmd = ["copilot", "--headless", "--no-auto-update", "--stdio"]
-        process, group_leader = await start_model_process(
+        process = await start_model_process(
             cmd,
             cwd,
             stdin=asyncio.subprocess.PIPE,
@@ -401,7 +402,7 @@ class CopilotCLIAdapter:
             ) from error
         finally:
             try:
-                await stop_model_processes(process, group_leader)
+                await stop_model_processes(process)
             finally:
                 if not stderr_task.done():
                     stderr_task.cancel()
@@ -480,8 +481,10 @@ class CopilotCLIAdapter:
 
         for name, entry in servers.items():
             if not isinstance(entry, dict):
+                actual_type = type(entry).__name__
                 warnings.warn(
-                    f"Skipping malformed MCP entry '{name}': expected object, got {type(entry).__name__}",
+                    f"Skipping malformed MCP entry '{name}': "
+                    f"expected object, got {actual_type}",
                     UserWarning,
                     stacklevel=2,
                 )
