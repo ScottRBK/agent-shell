@@ -1,6 +1,12 @@
 ---
 name: invoking-cli-agents
-description: Use when programmatically invoking a CLI coding agent (Claude Code, OpenCode, Copilot CLI, Codex, Pi, Cursor) from Python, delegating a task to a sub-agent, orchestrating several agents, streaming an agent's output, resuming an agent session, restricting which tools an agent may use, or checking whether an agent/model is healthy. Keywords: AgentShell, headless agent, subprocess, allowed_tools, disallowed_tools, read-only agent, session_id, cost, output_tokens.
+description: >-
+  Use when invoking a CLI coding agent from Python, delegating to a sub-agent, discovering
+  available model strings, orchestrating agents, streaming output, resuming sessions,
+  restricting tools, or checking agent/model health. Supports Claude Code, OpenCode,
+  Copilot CLI, Codex, Pi, and Cursor. Keywords: AgentShell, list_models, headless agent,
+  model discovery, subprocess, allowed_tools, disallowed_tools, session_id, cost,
+  output_tokens.
 ---
 
 # Invoking CLI Agents with AgentShell
@@ -20,6 +26,7 @@ passes `model` strings through verbatim and does not manage credentials.
 - You need to orchestrate multi-step workflows across agents
 - You want to stream agent output in real-time
 - You need to restrict what tools a delegated agent can run
+- You need the exact model strings currently advertised by a selected CLI
 - You want to check whether an agent/model combination works before relying on it
 
 ## When NOT to Use
@@ -36,8 +43,32 @@ uv add agent-shell-py
 ## Core Concepts
 
 AgentShell has two invocation methods — `execute()` collects a complete response, `stream()`
-yields events in real-time — plus helpers for health checks and MCP server management. All
-are async.
+yields events in real-time — plus helpers for model discovery, health checks, and MCP server
+management. All are async.
+
+### Discover Available Model Strings
+
+Use `list_models()` before selecting a model dynamically. It returns exact strings that the
+same shell accepts through `execute(model=...)` and `stream(model=...)`.
+
+```python
+shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+
+models = await shell.list_models(cwd="/path/to/project")
+selected_model = models[0]
+
+response = await shell.execute(
+    cwd="/path/to/project",
+    prompt="Review this project",
+    model=selected_model,
+)
+```
+
+Discovery reads CLI metadata. It sends no inference prompt and incurs no model-token cost.
+"Available" means the CLI advertises the selector for the current account/workspace; it does
+not prove quota or entitlement. Use `health_check(model=selected_model)` for that stronger
+inference check, which may incur cost. Preserve the returned string unchanged, including
+such as `auto` or `default`.
 
 ### Execute: Run and Collect
 
@@ -276,6 +307,8 @@ succeeded = saw_ok and error is None         # absent result => succeeded stays 
 
 ## Other Capabilities
 
+- **Model discovery** — `await shell.list_models(cwd)` returns exact selectable strings.
+  A genuine empty catalog returns `[]`; discovery failures are raised.
 - **Health check** — `await shell.health_check(cwd, model=...)` returns a `HealthCheckResult`.
   It sends its *own* trivial no-tool prompt to confirm the agent/model completes a turn — it does
   **not** run your prompt, so use the stream-based check above when you care about a specific
@@ -305,7 +338,8 @@ logging.getLogger("agent_shell").addHandler(logging.StreamHandler())
 | Whitelist tools (Claude/Copilot/Pi) | `allowed_tools=["Read", "Glob"]` |
 | Deny tools (Claude/OpenCode/Copilot/Pi) | `disallowed_tools=["edit", "bash"]` |
 | Track usage | Read `response.output_tokens` (portable) or `response.cost` |
-| Use a specific model | `model="sonnet"` |
+| Discover selectable models | `await shell.list_models(cwd)` |
+| Use a specific model | Pass one returned string as `model=...` |
 | Increase reasoning depth | `effort="high"` (not OpenCode or Cursor) |
 | See agent thinking | `include_thinking=True` in `stream()` |
 | Check an agent/model works | `await shell.health_check(cwd, model=...)` |
@@ -316,6 +350,8 @@ logging.getLogger("agent_shell").addHandler(logging.StreamHandler())
 | Mistake | Fix |
 |---------|-----|
 | Passing a non-existent `cwd` | Validate the path exists first (else `ValueError`) |
+| Hard-coding a public model catalog | Use `await shell.list_models(cwd)` |
+| Altering a discovered model string | Pass it back unchanged as `model=...` |
 | Forgetting `await` | Both `execute()` and the `stream()` iterator are async |
 | `allowed_tools=[]` to disable tools | Empty list is falsy → full access. Use a non-empty list or `disallowed_tools` |
 | `allowed_tools` with the default `auto_approve=True` as a safety boundary | `--dangerously-skip-permissions` bypasses it. Set `auto_approve=False`, or use `disallowed_tools` |

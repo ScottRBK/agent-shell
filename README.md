@@ -4,8 +4,8 @@ and returning the output that can be used programatically as a unified contract
 
 ## Features
 
-- **One unified contract** — the same `execute` / `stream` / `health_check` API across every
-  agent; swap the backend without changing a line of consuming code.
+- **One unified contract** — the same `execute`, `stream`, `health_check`, and
+  `list_models` API across every agent; swap the backend without changing consuming code.
 - **Six CLI agents** — Claude Code, OpenCode, Copilot CLI, Codex, Pi, and Cursor behind a
   common adapter protocol.
 - **Execute or stream** — get one `AgentResponse` (raises `AgentExecutionError` on a failed run),
@@ -13,6 +13,8 @@ and returning the output that can be used programatically as a unified contract
 - **Session resumption** — continue any conversation by passing back its `session_id`.
 - **Normalized cost & tokens** — consistent `cost` and `output_tokens` (reasoning included)
   regardless of how each CLI reports them.
+- **Model discovery** — retrieve the exact account/workspace-aware model strings accepted by
+  each CLI, without inference calls, SDK dependencies, or static catalogs.
 - **Health checks** — confirm an agent + model combination actually works before you rely on
   it, read from the event stream rather than unreliable exit codes.
 - **Portable tool control** — one canonical allow/deny vocabulary
@@ -138,6 +140,33 @@ async for event in shell.stream(
     else:
         print(f"[{event.type}] {event.content}")
 ```
+
+### Model discovery
+
+Ask the selected CLI which model strings it currently advertises, then pass one back
+unchanged. Discovery sends no inference prompt and has no model-token cost.
+
+```python
+shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+
+models = await shell.list_models(cwd="/path/to/project")
+selected_model = models[0]
+
+response = await shell.execute(
+    cwd="/path/to/project",
+    prompt="Review this project",
+    model=selected_model,
+)
+```
+
+"Available" means advertised as selectable for the current harness, account, and workspace.
+It does not prove quota, entitlement, credentials, or provider health. The harness's order and
+aliases such as `auto` and `default` are preserved. A genuine empty catalog returns `[]`;
+discovery failures are raised instead of being mistaken for an empty catalog.
+
+See the
+[agent parameter comparison](docs/development/agent_parameter_comparison.md#model-discovery)
+for each harness's underlying discovery mechanism.
 
 ### Health check
 

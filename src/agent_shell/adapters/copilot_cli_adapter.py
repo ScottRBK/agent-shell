@@ -8,9 +8,16 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, MCPServerType, HealthCheckResult
-from agent_shell.process_cleanup import (register_process_group, kill_process_group,
-                                         release_process)
+from agent_shell.process_cleanup import (
+    kill_process_group,
+    register_process_group,
+    release_process,
+)
 from agent_shell.adapters.health import run_health_probe
+from agent_shell.adapters.model_discovery import (
+    start_model_process,
+    stop_model_processes,
+)
 from agent_shell.adapters.response import collect_response
 from agent_shell.adapters.stderr_format import format_stderr
 from agent_shell.adapters.tool_denial import resolve_disallowed_tools
@@ -30,6 +37,80 @@ _DISALLOWED_TOOL_MAP = {
     "bash": ["shell"],
     "edit": ["write"],
 }
+
+
+def _json_rpc_frame(message: dict) -> bytes:
+    payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
+    header = f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
+    return header + payload
+
+
+async def _read_json_rpc_message(reader: asyncio.StreamReader) -> dict:
+    content_length: int | None = None
+    while True:
+        line = await reader.readline()
+        if not line:
+            raise RuntimeError("Copilot model discovery stream closed unexpectedly")
+        if line in {b"\r\n", b"\n"}:
+            break
+        try:
+            header = line.decode("ascii")
+        except UnicodeDecodeError as error:
+            raise RuntimeError(
+                "Copilot model discovery returned invalid JSON-RPC header encoding"
+            ) from error
+        name, separator, value = header.partition(":")
+        if not separator:
+            raise RuntimeError("Copilot model discovery returned a malformed header")
+        if name.lower() == "content-length":
+            try:
+                content_length = int(value.strip())
+                if content_length < 0:
+                    raise ValueError
+            except ValueError as error:
+                raise RuntimeError(
+                    "Copilot model discovery returned an invalid Content-Length"
+                ) from error
+
+    if content_length is None:
+        raise RuntimeError("Copilot model discovery omitted Content-Length")
+
+    try:
+        payload = await reader.readexactly(content_length)
+    except asyncio.IncompleteReadError as error:
+        raise RuntimeError(
+            "Copilot model discovery returned a truncated JSON-RPC payload"
+        ) from error
+    try:
+        message = json.loads(payload)
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise RuntimeError(
+            "Copilot model discovery returned an invalid JSON-RPC payload"
+        ) from error
+    if not isinstance(message, dict):
+        raise RuntimeError("Copilot model discovery returned an invalid JSON-RPC payload")
+    return message
+
+
+async def _read_json_rpc_response(
+    reader: asyncio.StreamReader,
+    request_id: int,
+) -> dict:
+    while True:
+        message = await _read_json_rpc_message(reader)
+        if message.get("id") == request_id:
+            return message
+
+
+def _json_rpc_result(response: dict) -> dict:
+    if "error" in response:
+        error = response.get("error") or {}
+        message = error.get("message") or "unknown JSON-RPC error"
+        raise RuntimeError(f"Copilot model discovery failed: {message}")
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise RuntimeError("Copilot model discovery returned an invalid result")
+    return result
 
 
 class CopilotCLIAdapter:
@@ -277,6 +358,68 @@ class CopilotCLIAdapter:
             timeout: float = 60.0,
     ) -> HealthCheckResult:
         return await run_health_probe(self, cwd, model=model, timeout=timeout)
+
+    async def list_models(
+            self,
+            cwd: str,
+            timeout: float = 30.0,
+    ) -> list[str]:
+        cmd = ["copilot", "--headless", "--no-auto-update", "--stdio"]
+        process, group_leader = await start_model_process(
+            cmd,
+            cwd,
+            stdin=asyncio.subprocess.PIPE,
+        )
+        stderr_task = asyncio.create_task(process.stderr.read())
+
+        try:
+            async with asyncio.timeout(timeout):
+                process.stdin.write(_json_rpc_frame({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "connect",
+                    "params": {},
+                }))
+                await process.stdin.drain()
+                _json_rpc_result(
+                    await _read_json_rpc_response(process.stdout, request_id=1)
+                )
+
+                process.stdin.write(_json_rpc_frame({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "models.list",
+                    "params": {},
+                }))
+                await process.stdin.drain()
+                result = _json_rpc_result(
+                    await _read_json_rpc_response(process.stdout, request_id=2)
+                )
+        except TimeoutError as error:
+            raise RuntimeError(
+                f"Copilot model discovery timed out after {timeout:g} seconds"
+            ) from error
+        finally:
+            try:
+                await stop_model_processes(process, group_leader)
+            finally:
+                if not stderr_task.done():
+                    stderr_task.cancel()
+                await asyncio.gather(stderr_task, return_exceptions=True)
+
+        models = result.get("models")
+        if not isinstance(models, list):
+            raise RuntimeError("Copilot model discovery returned no model list")
+
+        model_ids: list[str] = []
+        for model in models:
+            model_id = model.get("id") if isinstance(model, dict) else None
+            if not isinstance(model_id, str) or not model_id:
+                raise RuntimeError(
+                    "Copilot model discovery returned an invalid model entry"
+                )
+            model_ids.append(model_id)
+        return model_ids
 
     def _config_path(self) -> Path:
         return Path(os.path.expanduser("~/.copilot/mcp-config.json"))

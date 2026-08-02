@@ -23,7 +23,7 @@ packages = ["src/agent_shell"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 markers = [
-    "e2e: end-to-end tests that call real CLI agents (requires credentials, costs money)",
+    "e2e: real CLI tests (may require credentials and incur API costs)",
 ]
 
 [dependency-groups]

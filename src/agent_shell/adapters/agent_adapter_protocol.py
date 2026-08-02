@@ -48,6 +48,13 @@ class AgentAdapter(Protocol):
     ) -> HealthCheckResult:
         ...
 
+    async def list_models(
+            self,
+            cwd: str,
+            timeout: float = 30.0,
+    ) -> list[str]:
+        ...
+
     async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None:
         ...
 

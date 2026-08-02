@@ -11,6 +11,7 @@ from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, 
 from agent_shell.process_cleanup import (register_process_group, kill_process_group,
                                          release_process)
 from agent_shell.adapters.health import run_health_probe
+from agent_shell.adapters.model_discovery import decode_model_output, run_model_command
 from agent_shell.adapters.response import collect_response
 from agent_shell.adapters.stderr_format import format_stderr
 from agent_shell.adapters.tool_denial import resolve_disallowed_tools
@@ -353,6 +354,25 @@ class OpenCodeAdapter():
             timeout: float = 60.0,
     ) -> HealthCheckResult:
         return await run_health_probe(self, cwd, model=model, timeout=timeout)
+
+    async def list_models(
+            self,
+            cwd: str,
+            timeout: float = 30.0,
+    ) -> list[str]:
+        cmd = ["opencode", "models"]
+        returncode, stdout, stderr = await run_model_command(
+            cmd,
+            cwd,
+            timeout,
+            env=self._build_subprocess_env(cwd, None),
+        )
+        if returncode != 0:
+            message = format_stderr(stderr) or f"exit code {returncode}"
+            raise RuntimeError(f"`opencode models` failed: {message}")
+
+        output = decode_model_output(stdout, "`opencode models`")
+        return [line for line in output.splitlines() if line]
 
     def _config_path(self) -> Path:
         return Path(os.path.expanduser("~/.config/opencode/opencode.json"))

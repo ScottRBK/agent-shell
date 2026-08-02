@@ -90,6 +90,34 @@ class TestCwdValidation:
             async for _ in shell.stream(cwd="/nonexistent/path", prompt="test"):
                 pass
 
+    async def test_list_models_raises_for_nonexistent_cwd(self):
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+
+        # Act / Assert
+        with pytest.raises(ValueError, match="Directory does not exist"):
+            await shell.list_models(cwd="/nonexistent/path")
+
+
+class TestModelDiscoveryForwarding:
+    async def test_list_models_forwards_cwd_and_timeout(self):
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+        recorded: dict = {}
+
+        async def fake_list_models(**kwargs):
+            recorded.update(kwargs)
+            return ["sonnet"]
+
+        shell._adapter.list_models = fake_list_models
+
+        # Act
+        models = await shell.list_models(cwd="/tmp", timeout=12.5)
+
+        # Assert
+        assert models == ["sonnet"]
+        assert recorded == {"cwd": "/tmp", "timeout": 12.5}
+
 
 class TestDisallowedToolsForwarding:
     async def test_execute_forwards_disallowed_tools_to_adapter(self):

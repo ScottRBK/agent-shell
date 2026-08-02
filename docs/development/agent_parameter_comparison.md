@@ -1,10 +1,10 @@
 # Agent CLI Parameter Comparison
 
 Comparison of headless/non-interactive configuration across supported CLI coding agents.
-Last updated: 2026-07-26
+Last updated: 2026-08-02
 
 > The summary matrix below has no Pi or Cursor column (it predates both adapters); see the
-> per-agent detail sections and the `disallowed_tools` table for those two.
+> per-agent detail sections, the model-discovery section, and the `disallowed_tools` table.
 
 > Every "measured 2026-07-26" claim below comes from a real three-call run per agent (first
 > turn, resume on the returned id, then a session-less turn), recorded by the resume e2e tests
@@ -25,6 +25,58 @@ Last updated: 2026-07-26
 | **Budget** | `--max-budget-usd` | No direct flag | No direct flag | No direct flag |
 | **Auto-approve** | `--dangerously-skip-permissions` | `--yolo` | `--yolo` / `--allow-all` | Auto in `run` mode |
 | **Session resume** | `--resume` | `exec resume <id>` | `--resume` | `-s <id>` |
+
+## Model discovery
+
+Every adapter exposes the same account/workspace-aware API:
+
+```python
+shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+
+models = await shell.list_models(cwd="/path/to/project")
+selected_model = models[0]
+
+response = await shell.execute(
+    cwd="/path/to/project",
+    prompt="Do the work",
+    model=selected_model,
+)
+```
+
+`list_models()` returns `list[str]`. Each string is the exact selector accepted by that
+same adapter's `execute(model=...)` and `stream(model=...)`; callers do not translate it.
+Discovery reads CLI metadata and makes no inference call.
+
+| Harness | Discovery mechanism | Returned selector |
+|---|---|---|
+| Claude Code | stream-JSON `initialize` control request | `models[].value` |
+| OpenCode | `opencode models` | each complete output line |
+| Copilot CLI | headless JSON-RPC `models.list` | `models[].id` |
+| Codex | `codex debug models` | visible model `slug` |
+| Pi | `pi --no-approve --list-models` | `provider/model` |
+| Cursor | `cursor-agent models` | ID before the first ` - ` |
+
+Important semantics:
+
+- "Available" means advertised as selectable for the current harness, account, and
+  workspace. It does not guarantee current quota, entitlement, credentials, or provider
+  health. Use `health_check(model=...)` when actual execution must be proven.
+- Claude and Copilot are invoked directly as CLIs. Their SDK documentation was protocol
+  evidence only; AgentShell imports no harness SDKs and adds no runtime dependency.
+- Claude runs in print mode with `--no-session-persistence`, so discovery is not saved as a
+  resumable session.
+- Codex filters the refreshed JSON catalog to `visibility == "list"`. Its documented
+  `debug models` command is experimental, so integration and local E2E tests guard drift.
+- Pi model IDs are provider-qualified because IDs can repeat across providers. Discovery
+  does not run the mutating `pi update --models` command.
+- The harness's order and aliases such as `auto` or `default` are preserved.
+- A genuine empty catalog returns `[]`. Authentication, timeout, non-zero exit, and
+  malformed protocol/output failures are surfaced with actionable errors.
+- AgentShell does not cache or replace results with a static fallback catalog.
+
+The behavior was verified against all six installed CLIs on 2026-08-02 without inference
+spend. CI covers captured real outputs through `AgentShell`; a local E2E test checks all six
+real discovery commands.
 
 ## Claude Code
 

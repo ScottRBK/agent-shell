@@ -3,7 +3,7 @@
 - [Models](#models) — `AgentType`, `AgentResponse`, `AgentExecutionError`, `StreamEvent`,
   `MCPServerSpec`, `HealthCheckResult`
 - [StreamEvent types](#event-types)
-- [AgentShell class](#agentshell-class) — `execute`, `stream`, `health_check`, MCP management
+- [AgentShell class](#agentshell-class) — invocation, model discovery, health, MCP management
 - [AgentAdapter protocol](#agentadapter-protocol)
 - [Agent-specific notes](#agent-specific-notes)
 
@@ -163,10 +163,27 @@ class AgentShell:
     ) -> HealthCheckResult: ...
     # Sends a trivial no-tool prompt; healthy iff the LAST result event is "ok" and no error.
 
+    async def list_models(
+        self, cwd: str, timeout: float = 30.0,
+    ) -> list[str]: ...
+    # Returns exact selectors accepted by execute(model=...) and stream(model=...).
+
     async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None: ...
     async def remove_mcp_server(self, mcp_server_name: str) -> None: ...
     async def list_mcp_servers(self) -> list[MCPServerSpec]: ...
 ```
+
+### Model discovery semantics
+
+`list_models()` reads the selected CLI's account/workspace-aware catalog without sending an
+inference prompt. It preserves harness order and aliases such as `auto` and `default`. Pi
+selectors are provider-qualified (`provider/model`) because model IDs can repeat across
+providers.
+
+A returned string is advertised as selectable, not guaranteed runnable at that moment. Use
+`health_check(model=...)` to validate credentials, entitlement, quota, and provider health.
+A genuine empty catalog returns `[]`; timeout, authentication, CLI, and malformed-output
+failures are raised. AgentShell does not cache or substitute a static catalog.
 
 ### disallowed_tools canonical vocabulary
 
@@ -198,6 +215,7 @@ class AgentAdapter(Protocol):
     async def cancel(self) -> None: ...
 
     async def health_check(self, cwd, model=None, timeout=60.0) -> HealthCheckResult: ...
+    async def list_models(self, cwd, timeout=30.0) -> list[str]: ...
     async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None: ...
     async def remove_mcp_server(self, mcp_server_name: str) -> None: ...
     async def list_mcp_servers(self) -> list[MCPServerSpec]: ...

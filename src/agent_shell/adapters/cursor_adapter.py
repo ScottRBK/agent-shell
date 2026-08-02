@@ -10,6 +10,7 @@ from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, 
 from agent_shell.process_cleanup import (register_process_group, kill_process_group,
                                          release_process)
 from agent_shell.adapters.health import run_health_probe
+from agent_shell.adapters.model_discovery import decode_model_output, run_model_command
 from agent_shell.adapters.response import collect_response
 from agent_shell.adapters.stderr_format import format_stderr
 
@@ -290,6 +291,36 @@ class CursorAdapter:
             timeout: float = 60.0,
     ) -> HealthCheckResult:
         return await run_health_probe(self, cwd, model=model, timeout=timeout)
+
+    async def list_models(
+            self,
+            cwd: str,
+            timeout: float = 30.0,
+    ) -> list[str]:
+        cmd = ["cursor-agent", "models"]
+        returncode, stdout, stderr = await run_model_command(
+            cmd,
+            cwd,
+            timeout,
+        )
+        if returncode != 0:
+            message = format_stderr(stderr) or f"exit code {returncode}"
+            raise RuntimeError(f"`cursor-agent models` failed: {message}")
+
+        output = decode_model_output(stdout, "`cursor-agent models`")
+        models: list[str] = []
+        for line in output.splitlines():
+            if (
+                not line
+                or line == "Available models"
+                or line.startswith("Tip: use --model ")
+            ):
+                continue
+            model, separator, _ = line.partition(" - ")
+            if not separator or not model.strip():
+                raise RuntimeError("Unexpected `cursor-agent models` output")
+            models.append(model.strip())
+        return models
 
     async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None:
         # Cursor's `mcp` subcommands are login/list/list-tools/enable/disable ONLY — there is

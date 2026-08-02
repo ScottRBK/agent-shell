@@ -5,13 +5,14 @@ Safety net for orphaned child processes when the parent exits without
 calling cancel() — e.g. when asyncio.run() converts SIGINT into
 CancelledError and the KeyboardInterrupt handler never fires.
 
-Every adapter registers its child's process group ID here on subprocess
-creation and unregisters it on normal completion or explicit cancel().
-If any PGIDs remain at interpreter shutdown, atexit kills them.
+Adapter subprocess groups and model-discovery group sentinels register their
+leader PID here. Normal teardown removes it; if any entries remain at
+interpreter shutdown, atexit kills those groups.
 
-`release_process` is the counterpart to that registration: every adapter's
-`stream()` calls it from a `finally`, so it covers the exception and
-abandoned-consumer paths as well as the normal one.
+`release_process` is the stream counterpart to that registration: every
+adapter's `stream()` calls it from a `finally`, so it covers the exception and
+abandoned-consumer paths as well as the normal one. Model discovery owns its
+short-lived sentinel and tears down that whole group after every call.
 
 That `finally` is not, however, a guarantee that teardown has happened by
 the time the consumer moves on. CPython does not run an async generator's
@@ -53,8 +54,9 @@ def _group_is_ours(pid: int) -> bool:
 
     Two shapes qualify, and nothing else does.
 
-    `os.getpgid(pid) == pid` — the child is still alive and still leads its own group. Every
-    adapter spawns with preexec_fn=os.setsid, so pgid == pid for as long as the child is ours.
+    `os.getpgid(pid) == pid` — the child is still alive and still leads its own group. Adapter
+    runs use `setsid`; model discovery uses a dedicated leader created with `process_group=0`.
+    In both cases pgid == pid for as long as the registered leader is ours.
     The kernel is free to hand the number to anyone the moment the child watcher's os.waitpid()
     reaps it, and a recycled pid resolves through os.getpgid() to a group we have no business
     killing — an adversarial run forced a pid wrap and watched an unrelated process die by
@@ -190,15 +192,15 @@ def cleanup_process_groups() -> None:
     the registry entry on a failed kill: that deliberately routes recovery traffic here, so an
     unguarded body here would hand every recycled pid a second chance to kill a stranger.
 
-    The entries are pids, not getpgid()-derived pgids — adapters register process.pid at spawn
-    and spawn with preexec_fn=os.setsid, so pgid == pid while the child is ours. By interpreter
-    exit that number proves very little on its own: the child has usually been reaped and the
+    The entries are pids, not getpgid()-derived pgids. Adapter children use `setsid`, while
+    model discovery registers a leader created with `process_group=0`; both make pgid == pid.
+    By interpreter exit that number proves very little on its own: the leader may be reaped and
     pid may belong to anyone, so `_group_is_ours` is doing the load-bearing work and signalling
     the registered number directly would be reckless.
 
-    Expect this to find nothing most runs. Every path that completes unregisters as it goes —
-    including the normal one, which unregisters without killing — so what survives to here is
-    only what teardown never reached. An orphaned group with a dead leader can turn up, but it
+    Expect this to find nothing most runs. Every path that completes removes its registration:
+    normal streams unregister without killing, while model discovery tears down its temporary
+    group. What survives is only teardown that never ran. An orphaned group can turn up, but it
     is the exception, not the reason for delegating.
 
     Never raises: atexit has nowhere to report an exception, and one bad entry must not abandon

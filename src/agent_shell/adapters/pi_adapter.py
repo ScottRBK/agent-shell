@@ -3,6 +3,7 @@ import codecs
 import json
 import logging
 import os
+import re
 import warnings
 from typing import AsyncIterator
 
@@ -10,6 +11,7 @@ from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, 
 from agent_shell.process_cleanup import (register_process_group, kill_process_group,
                                          release_process)
 from agent_shell.adapters.health import run_health_probe
+from agent_shell.adapters.model_discovery import decode_model_output, run_model_command
 from agent_shell.adapters.response import collect_response
 from agent_shell.adapters.stderr_format import format_stderr
 from agent_shell.adapters.tool_denial import resolve_disallowed_tools
@@ -315,6 +317,43 @@ class PiAdapter:
             timeout: float = 60.0,
     ) -> HealthCheckResult:
         return await run_health_probe(self, cwd, model=model, timeout=timeout)
+
+    async def list_models(
+            self,
+            cwd: str,
+            timeout: float = 30.0,
+    ) -> list[str]:
+        cmd = ["pi", "--no-approve", "--list-models"]
+        returncode, stdout, stderr = await run_model_command(
+            cmd,
+            cwd,
+            timeout,
+        )
+        if returncode != 0:
+            message = format_stderr(stderr) or f"exit code {returncode}"
+            raise RuntimeError(f"`pi --list-models` failed: {message}")
+        if stderr:
+            message = format_stderr(stderr).strip()
+            raise RuntimeError(f"`pi --list-models` returned warnings: {message}")
+
+        output = decode_model_output(stdout, "`pi --list-models`")
+        if output.startswith("No models available"):
+            return []
+
+        lines = [line for line in output.splitlines() if line]
+        expected_header = [
+            "provider", "model", "context", "max-out", "thinking", "images"
+        ]
+        if not lines or re.split(r"\s{2,}", lines[0].strip()) != expected_header:
+            raise RuntimeError("Unexpected `pi --list-models` output")
+
+        models: list[str] = []
+        for line in lines[1:]:
+            columns = re.split(r"\s{2,}", line.strip())
+            if len(columns) != len(expected_header):
+                raise RuntimeError("Unexpected `pi --list-models` output")
+            models.append(f"{columns[0]}/{columns[1]}")
+        return models
 
     async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None:
         # Pi manages capability through `pi install` extensions and a settings file with no

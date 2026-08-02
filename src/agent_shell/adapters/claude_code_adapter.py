@@ -11,6 +11,7 @@ from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, 
 from agent_shell.process_cleanup import (register_process_group, kill_process_group,
                                          release_process)
 from agent_shell.adapters.health import run_health_probe
+from agent_shell.adapters.model_discovery import decode_model_output, run_model_command
 from agent_shell.adapters.response import collect_response
 from agent_shell.adapters.stderr_format import format_stderr
 from agent_shell.adapters.tool_denial import resolve_disallowed_tools
@@ -236,6 +237,77 @@ class ClaudeCodeAdapter():
             timeout: float = 60.0,
     ) -> HealthCheckResult:
         return await run_health_probe(self, cwd, model=model, timeout=timeout)
+
+    async def list_models(
+            self,
+            cwd: str,
+            timeout: float = 30.0,
+    ) -> list[str]:
+        cmd = [
+            "claude",
+            "--print",
+            "--no-session-persistence",
+            "--output-format", "stream-json",
+            "--verbose",
+            "--input-format", "stream-json",
+            "--tools", "",
+            "--permission-mode", "dontAsk",
+        ]
+        request = {
+            "request_id": "agent-shell-models",
+            "type": "control_request",
+            "request": {"subtype": "initialize"},
+        }
+        input_data = (json.dumps(request) + "\n").encode("utf-8")
+        returncode, stdout, stderr = await run_model_command(
+            cmd,
+            cwd,
+            timeout,
+            input_data=input_data,
+        )
+        if returncode != 0:
+            message = format_stderr(stderr) or f"exit code {returncode}"
+            raise RuntimeError(f"Claude model discovery failed: {message}")
+
+        output = decode_model_output(stdout, "Claude model discovery")
+        for line in output.splitlines():
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise RuntimeError(
+                    "Claude model discovery returned invalid JSON"
+                ) from error
+            if not isinstance(event, dict):
+                raise RuntimeError("Claude model discovery returned invalid JSON")
+            if event.get("type") != "control_response":
+                continue
+
+            response = event.get("response")
+            if not isinstance(response, dict):
+                raise RuntimeError("Claude model discovery returned an invalid response")
+            if response.get("request_id") != "agent-shell-models":
+                continue
+            if response.get("subtype") != "success":
+                raise RuntimeError("Claude model discovery request failed")
+
+            payload = response.get("response")
+            models = payload.get("models", []) if isinstance(payload, dict) else None
+            if not isinstance(models, list):
+                raise RuntimeError("Claude model discovery returned no model list")
+
+            model_values: list[str] = []
+            for model in models:
+                value = model.get("value") if isinstance(model, dict) else None
+                if not isinstance(value, str) or not value:
+                    raise RuntimeError(
+                        "Claude model discovery returned an invalid model entry"
+                    )
+                model_values.append(value)
+            return model_values
+
+        raise RuntimeError("Claude model discovery returned no initialization response")
 
     async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None:
         # Pre-remove for overwrite semantics; ignore failure (server may not exist).

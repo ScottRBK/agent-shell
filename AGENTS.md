@@ -11,6 +11,7 @@ classDiagram
         +execute(cwd, prompt, ...) AgentResponse
         +stream(cwd, prompt, ...) AsyncIterator~StreamEvent~
         +health_check(cwd, model, timeout) HealthCheckResult
+        +list_models(cwd, timeout) list~str~
         +add_mcp_server(spec) None
         +remove_mcp_server(name) None
         +list_mcp_servers() list~MCPServerSpec~
@@ -22,6 +23,7 @@ classDiagram
         +stream(cwd, prompt, ...) AsyncIterator~StreamEvent~
         +cancel() None
         +health_check(cwd, model, timeout) HealthCheckResult
+        +list_models(cwd, timeout) list~str~
         +add_mcp_server(spec) None
         +remove_mcp_server(name) None
         +list_mcp_servers() list~MCPServerSpec~
@@ -32,6 +34,7 @@ classDiagram
         +execute(cwd, prompt, ...) AgentResponse
         +stream(cwd, prompt, ...) AsyncIterator~StreamEvent~
         +cancel() None
+        +list_models(cwd, timeout) list~str~
         +add_mcp_server(spec) None
         +remove_mcp_server(name) None
         +list_mcp_servers() list~MCPServerSpec~
@@ -125,6 +128,12 @@ stream; `adapters/health.py` wraps it for the health probe, and `adapters/respon
 for `execute()`'s stream-to-`AgentResponse` collection (used by every adapter — each `execute()`
 is a single delegating call into it).
 
+`list_models(cwd, timeout)` asks the selected CLI for its current account/workspace-aware model
+catalog and returns exact `list[str]` selectors that can be passed unchanged to `execute()` or
+`stream()`. It sends no inference prompt, imports no harness SDK, invokes no separate refresh
+command, and never substitutes a static catalog. "Available" means advertised as selectable; use
+`health_check(model=...)` when actual execution must be proven.
+
 ## Supported Agents
 
 - [x] Claude Code
@@ -172,9 +181,14 @@ Tests validate real functionality, not code coverage metrics. Three tiers, each 
 |------|-------|-----------|----------------|
 | **Unit** | Isolated functions (`_parse_event`, adapter resolution, input validation) | Yes | No |
 | **Integration** | Full flow through `AgentShell` -> `Adapter` -> parser with mocked subprocess | Yes | No |
-| **E2E** | Real CLI agent calls, real API costs | No (local only) | Yes |
+| **E2E** | Real CLI calls; usually real API costs | No (local only) | Yes |
 
-Integration tests mirror the E2E tests exactly but substitute a mocked subprocess emitting captured NDJSON fixtures. This means CI validates the entire class interaction chain without credentials or API spend. E2E tests exist as a local smoke test to confirm the real agents still behave as expected.
+The model-discovery E2E test is the exception: it calls all six real CLIs but only reads
+metadata, so it sends no inference request and incurs no model-token cost.
+
+Integration tests mirror the E2E tests but substitute mocked subprocesses emitting captured CLI
+output fixtures. This lets CI validate the full class interaction chain without credentials or API
+spend. E2E tests remain local smoke tests for the real agents.
 
 All tests follow the **AAA pattern** (Arrange, Act, Assert).
 

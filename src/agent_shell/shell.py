@@ -114,6 +114,16 @@ class AgentShell():
 
         return await self._adapter.health_check(cwd=cwd, model=model, timeout=timeout)
 
+    async def list_models(
+            self,
+            cwd: str,
+            timeout: float = 30.0,
+    ) -> list[str]:
+        if not Path(cwd).is_dir():
+            raise ValueError(f"Directory does not exist: {cwd}")
+
+        return await self._adapter.list_models(cwd=cwd, timeout=timeout)
+
     async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None:
         await self._adapter.add_mcp_server(mcp_server)
 

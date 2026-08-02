@@ -19,7 +19,13 @@ import time
 
 import pytest
 
-from agent_shell.process_cleanup import _active_process_groups, cleanup_process_groups
+from agent_shell.models.agent import AgentType
+from agent_shell.process_cleanup import (
+    _active_process_groups,
+    cleanup_process_groups,
+    kill_process_group,
+)
+from agent_shell.shell import AgentShell
 
 from agent_shell.adapters.claude_code_adapter import ClaudeCodeAdapter
 from agent_shell.adapters.codex_adapter import CodexAdapter
@@ -73,8 +79,13 @@ if spec.get("grandchild_pid_file"):
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     with open(spec["grandchild_pid_file"], "w") as f:
         f.write(str(grandchild.pid))
+if spec.get("sleep_before_stdout"):
+    time.sleep(spec["sleep_before_stdout"])
 for event in spec["stdout"]:
     sys.stdout.write(json.dumps(event) + "\\n")
+    sys.stdout.flush()
+for output in spec.get("raw_stdout", []):
+    sys.stdout.write(output)
     sys.stdout.flush()
 if spec.get("hang"):
     time.sleep(60)
@@ -134,6 +145,11 @@ async def _reaped(pid: int, timeout: float = 5.0) -> bool:
             return True
         await asyncio.sleep(0.01)
     return False
+
+
+def _copilot_rpc_frame(message: dict) -> str:
+    payload = json.dumps(message, separators=(",", ":"))
+    return f"Content-Length: {len(payload.encode('utf-8'))}\r\n\r\n{payload}"
 
 
 async def _wait_until(predicate, timeout: float = 5.0) -> bool:
@@ -284,6 +300,99 @@ async def test_cleanup_kills_the_grandchildren_of_an_already_reaped_child(fake_c
             os.kill(grandchild_pid, signal.SIGKILL)
         await agen.aclose()
         _active_process_groups.clear()
+
+
+@pytest.mark.parametrize(
+    "agent_type",
+    [
+        pytest.param(AgentType.OPENCODE, id="shared-command-helper"),
+        pytest.param(AgentType.COPILOT_CLI, id="copilot-json-rpc"),
+    ],
+)
+async def test_model_discovery_timeout_kills_the_cli_and_its_grandchild(
+        agent_type, fake_cli, tmp_path):
+    # Arrange
+    shell = AgentShell(agent_type=agent_type)
+    pid_file = tmp_path / "discovery-grandchild.pid"
+    fake_cli(stdout=[], hang=True, grandchild_pid_file=str(pid_file))
+    grandchild_pid = None
+
+    try:
+        # Act
+        with pytest.raises(RuntimeError, match="timed out"):
+            await shell.list_models(cwd=str(tmp_path), timeout=0.2)
+        grandchild_pid = int(pid_file.read_text())
+
+        # Assert
+        assert await _reaped(grandchild_pid, timeout=1.0), (
+            "model discovery left its CLI grandchild running"
+        )
+    finally:
+        if grandchild_pid is None and pid_file.exists():
+            grandchild_pid = int(pid_file.read_text())
+        if grandchild_pid is not None:
+            with contextlib.suppress(OSError):
+                os.kill(grandchild_pid, signal.SIGKILL)
+
+
+@pytest.mark.parametrize(
+    "agent_type",
+    [
+        pytest.param(AgentType.OPENCODE, id="shared-command-helper"),
+        pytest.param(AgentType.COPILOT_CLI, id="copilot-json-rpc"),
+    ],
+)
+async def test_successful_model_discovery_kills_a_leftover_grandchild(
+        agent_type, fake_cli, tmp_path, monkeypatch):
+    # Arrange
+    shell = AgentShell(agent_type=agent_type)
+    pid_file = tmp_path / "successful-discovery-grandchild.pid"
+    spec = {
+        "stdout": [],
+        "grandchild_pid_file": str(pid_file),
+    }
+    if agent_type == AgentType.OPENCODE:
+        spec["raw_stdout"] = ["provider/model\n"]
+    else:
+        spec["raw_stdout"] = [
+            _copilot_rpc_frame({"jsonrpc": "2.0", "id": 1, "result": {}}),
+            _copilot_rpc_frame({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {"models": [{"id": "model"}]},
+            }),
+        ]
+        spec["sleep_before_stdout"] = 0.05
+    fake_cli(**spec)
+    grandchild_pid = None
+
+    def kill_only_a_live_leader(pid):
+        assert os.getpgid(pid) == pid, (
+            "successful discovery tried to kill a group through a reaped leader"
+        )
+        kill_process_group(pid)
+
+    monkeypatch.setattr(
+        "agent_shell.adapters.model_discovery.kill_process_group",
+        kill_only_a_live_leader,
+    )
+
+    try:
+        # Act
+        models = await shell.list_models(cwd=str(tmp_path))
+        grandchild_pid = int(pid_file.read_text())
+
+        # Assert
+        assert models
+        assert await _reaped(grandchild_pid, timeout=1.0), (
+            "successful model discovery left its CLI grandchild running"
+        )
+    finally:
+        if grandchild_pid is None and pid_file.exists():
+            grandchild_pid = int(pid_file.read_text())
+        if grandchild_pid is not None:
+            with contextlib.suppress(OSError):
+                os.kill(grandchild_pid, signal.SIGKILL)
 
 
 async def test_teardown_after_break_is_deferred_to_a_later_loop_turn(fake_cli, tmp_path):
