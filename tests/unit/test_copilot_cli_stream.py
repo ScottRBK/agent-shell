@@ -115,6 +115,58 @@ class TestStream:
         assert "--effort" in cmd_args
         assert cmd_args[cmd_args.index("--effort") + 1] == "high"
 
+    @pytest.mark.parametrize(
+        ("effort", "expected"),
+        [
+            ("none", "none"),
+            ("minimal", "minimal"),
+            ("low", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+            ("xhigh", "xhigh"),
+            ("max", "max"),
+            ("NONE", "none"),
+            ("Minimal", "minimal"),
+            ("HIGH", "high"),
+            ("xHiGh", "xhigh"),
+            ("MAX", "max"),
+            ("Max", "max"),
+        ],
+    )
+    async def test_accepts_and_normalizes_supported_effort_values(
+        self, effort: str, expected: str
+    ):
+        # Arrange
+        adapter = CopilotCLIAdapter()
+        ndjson = [MESSAGE_DELTA_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            async for _ in adapter.stream(cwd="/tmp", prompt="test", effort=effort):
+                pass
+
+        # Assert
+        cmd_args = mock_exec.call_args[0]
+        assert cmd_args[cmd_args.index("--effort") + 1] == expected
+
+    async def test_rejects_unsupported_effort_before_spawning(self):
+        # Arrange
+        adapter = CopilotCLIAdapter()
+
+        # Act
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            with pytest.raises(ValueError) as error:
+                async for _ in adapter.stream(cwd="/tmp", prompt="test", effort="turbo"):
+                    pass
+
+        # Assert
+        assert str(error.value) == (
+            "Unsupported Copilot effort 'turbo'; accepted choices: "
+            "none, minimal, low, medium, high, xhigh, max"
+        )
+        mock_exec.assert_not_called()
+
     async def test_omits_effort_flag_when_none(self):
         # Arrange
         adapter = CopilotCLIAdapter()

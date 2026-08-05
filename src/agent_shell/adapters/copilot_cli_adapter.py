@@ -44,6 +44,21 @@ _DISALLOWED_TOOL_MAP = {
     "edit": ["write"],
 }
 
+_COPILOT_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def _normalize_effort(effort: str | None) -> str | None:
+    if effort is None:
+        return None
+
+    normalized = effort.lower() if isinstance(effort, str) else None
+    if normalized not in _COPILOT_EFFORTS:
+        choices = ", ".join(_COPILOT_EFFORTS)
+        raise ValueError(
+            f"Unsupported Copilot effort {effort!r}; accepted choices: {choices}"
+        )
+    return normalized
+
 
 def _json_rpc_frame(message: dict) -> bytes:
     payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
@@ -160,6 +175,7 @@ class CopilotCLIAdapter:
             session_id: str | None = None,
             disallowed_tools: list[str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
+        effort = _normalize_effort(effort)
         cmd = [
             "copilot", "-p", prompt,
             "--output-format", "json",

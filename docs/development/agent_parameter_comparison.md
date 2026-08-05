@@ -1,7 +1,7 @@
 # Agent CLI Parameter Comparison
 
 Comparison of headless/non-interactive configuration across supported CLI coding agents.
-Last updated: 2026-08-02
+Last updated: 2026-08-05
 
 > The summary matrix below has no Pi or Cursor column (it predates both adapters); see the
 > per-agent detail sections, the model-discovery section, and the `disallowed_tools` table.
@@ -20,9 +20,9 @@ Last updated: 2026-08-02
 | **Allowed tools** | `--allowed-tools` | No direct flag | `--allow-tool`, `--available-tools` | `tools` in config |
 | **Disallowed tools** | `--disallowed-tools` | `web_search` config only | `--deny-tool` | `OPENCODE_PERMISSION` env / `permission` config |
 | **Stream output** | `--output-format stream-json` | `--json` (NDJSON) | `--output-format=json` (JSONL) | `--format json` |
-| **Working dir** | cwd + `--add-dir` | `--cd` / `-C` | cwd (no flag) | cwd (no flag) |
+| **Working dir** | cwd + `--add-dir` | `--cd` / `-C` | cwd / `-C` | cwd |
 | **System prompt** | `--system-prompt` / `--append-system-prompt` | No flag (files only) | No flag (files only) | `instructions` in config |
-| **Budget** | `--max-budget-usd` | No direct flag | No direct flag | No direct flag |
+| **Budget** | `--max-budget-usd` | No direct flag | `--max-ai-credits` | No direct flag |
 | **Auto-approve** | `--dangerously-skip-permissions` | `--yolo` | `--yolo` / `--allow-all` | Auto in `run` mode |
 | **Session resume** | `--resume` | `exec resume <id>` | `--resume` | `-s <id>` |
 
@@ -123,23 +123,32 @@ real discovery commands.
 
 ## Copilot CLI (GitHub)
 
-- **Headless mode**: `-p` / `--prompt` for one-shot, `--acp --stdio` for programmatic JSON-RPC
-- **Model**: `--model` (default `claude-sonnet-4.5`)
-- **Effort**: `--effort low|medium|high` or `--reasoning-effort low|medium|high`
-- **Allowed tools**: `--allow-tool`, `--deny-tool`, `--available-tools`, `--excluded-tools`, `--allow-all-tools`
-- **Auto-approve**: `--allow-all` / `--yolo`, `--autopilot`
+- **Headless mode**: `-p` / `--prompt` for one-shot; `--acp` for Agent Client Protocol
+- **Model**: `--model <model>`; use `auto` to let Copilot choose
+- **Effort**: `--effort` / `--reasoning-effort` with choices
+  `none|minimal|low|medium|high|xhigh|max`. AgentShell accepts effort values
+  case-insensitively, validates them against these choices, and passes the normalized lowercase
+  value to Copilot via `--effort`.
+- **Allowed tools**: `--allow-tool`, `--deny-tool`, `--available-tools`,
+  `--excluded-tools`, `--allow-all-tools`
+- **Auto-approve**: `--allow-all-tools`; `--allow-all` / `--yolo` also grant path and URL
+  permissions
+- **Agent mode**: `--mode interactive|plan|autopilot`; `--autopilot` is the shortcut
 - **Output format**: `--output-format=json` (JSONL)
 - **Silent mode**: `--silent` suppresses stats, prints only response
-- **Working directory**: Uses cwd (no flag), ACP mode uses `newSession` parameter
-- **System prompt**: No CLI flag, uses `.github/copilot-instructions.md` and `AGENTS.md` files
-- **Budget**: No per-run flag, auto-compacts at 95% token limit
+- **Working directory**: CLI supports `-C <directory>`; AgentShell sets subprocess `cwd`
+- **System prompt**: No CLI flag; uses `.github/copilot-instructions.md` and `AGENTS.md` files
+- **AI credit budget**: `--max-ai-credits <credits>` limits credits for the session
+- **Token budget**: No per-run flag; auto-compacts at 95% of the token limit
 - **Path permissions**: `--allow-all-paths`, `--disallow-temp-dir`
 - **URL permissions**: `--allow-all-urls`, `--allow-url`, `--deny-url`
-- **Session**: `--resume`, `--continue`, plus `--session-id=<uuid>` to start a NEW session under
-  a chosen id. The adapter resumes with `--resume <id>`. The resumed run reports the SAME
-  `sessionId`, and an unknown id is rejected ("No session, task, or name matched"), so id
-  identity is real evidence the CLI continued that session (measured 2026-07-26)
-- **ACP mode**: `--acp --stdio` or `--acp --port 3000` for JSON-RPC integration
+- **Session**: `--resume`, `--continue`, and `--session-id <id>`. The latter resumes an existing
+  session or task, or assigns a UUID to a new session. AgentShell resumes with `--resume <id>`.
+  The resumed run reports the SAME `sessionId`, and an unknown id is rejected
+  ("No session, task, or name matched"), so id identity is real evidence the CLI continued that
+  session (measured 2026-07-26).
+- **ACP mode**: `--acp` uses stdio by default. Copilot CLI 1.0.78 also accepts hidden
+  `--stdio` and `--port <port>` transport options; they are not shown by `copilot --help`.
 
 ## OpenCode
 
