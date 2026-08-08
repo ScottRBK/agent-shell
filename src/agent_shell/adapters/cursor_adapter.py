@@ -4,12 +4,15 @@ import json
 import logging
 import os
 import warnings
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import AsyncIterator
 
 from agent_shell.models.agent import (
     AgentResponse,
     HealthCheckResult,
     MCPServerSpec,
+    MCPServerType,
     StreamEvent,
 )
 from agent_shell.process_cleanup import (
@@ -324,15 +327,173 @@ class CursorAdapter:
             models.append(model.strip())
         return models
 
+    def _mcp_config_path(self) -> Path:
+        return Path(os.path.expanduser("~/.cursor/mcp.json"))
+
+    def _read_mcp_config(self) -> dict:
+        path = self._mcp_config_path()
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text())
+
+    def _write_mcp_config(self, config: dict) -> None:
+        path = self._mcp_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+
+        try:
+            with NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=path.parent,
+                    prefix=f".{path.name}.",
+                    delete=False,
+            ) as temporary_file:
+                temporary_path = Path(temporary_file.name)
+                temporary_file.write(json.dumps(config, indent=2) + "\n")
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+
+            os.replace(temporary_path, path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _mcp_servers(config: dict) -> dict:
+        if not isinstance(config, dict):
+            raise ValueError("Cursor mcp.json root must be a JSON object")
+
+        servers = config.get("mcpServers", {})
+        if not isinstance(servers, dict):
+            raise ValueError("Cursor 'mcpServers' must be a JSON object")
+
+        config["mcpServers"] = servers
+        return servers
+
+    @staticmethod
+    def _mcp_entry_type(entry: dict) -> MCPServerType | None:
+        entry_type = entry.get("type")
+        if entry_type == "stdio":
+            return MCPServerType.STDIO
+        if entry_type in {"http", "sse"}:
+            return MCPServerType.HTTP
+        if entry_type is not None:
+            return None
+        if entry.get("command"):
+            return MCPServerType.STDIO
+        if entry.get("url"):
+            return MCPServerType.HTTP
+        return None
+
+    @staticmethod
+    def _string_list(value: object, field_name: str) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise TypeError(f"{field_name} must be a list of strings")
+        return list(value)
+
+    @staticmethod
+    def _string_mapping(value: object, field_name: str) -> dict[str, str]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict) or not all(
+                isinstance(key, str) and isinstance(item, str)
+                for key, item in value.items()
+        ):
+            raise TypeError(f"{field_name} must be an object with string values")
+        return dict(value)
+
     async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None:
-        # Cursor's `mcp` subcommands are login/list/list-tools/enable/disable ONLY — there is
-        # no add/remove. Servers are declared in .cursor/mcp.json, and `mcp list` reports only
-        # `name: status` (no transport/command/url), so an MCPServerSpec cannot be faithfully
-        # round-tripped either. Fail loud rather than silently no-op.
-        raise NotImplementedError("add_mcp_server is not supported for Cursor")
+        config = self._read_mcp_config()
+        servers = self._mcp_servers(config)
+
+        if mcp_server.type == MCPServerType.STDIO:
+            entry = {
+                "command": mcp_server.command,
+                "args": list(mcp_server.args),
+                "env": dict(mcp_server.env),
+            }
+        else:
+            entry = {
+                "url": mcp_server.url,
+                "headers": dict(mcp_server.headers),
+            }
+
+        existing = servers.get(mcp_server.name)
+        if (
+                isinstance(existing, dict)
+                and self._mcp_entry_type(existing) == mcp_server.type
+        ):
+            entry = {**existing, **entry}
+
+        servers[mcp_server.name] = entry
+        self._write_mcp_config(config)
 
     async def remove_mcp_server(self, mcp_server_name: str) -> None:
-        raise NotImplementedError("remove_mcp_server is not supported for Cursor")
+        config = self._read_mcp_config()
+        servers = self._mcp_servers(config)
+        if mcp_server_name not in servers:
+            warnings.warn(
+                f"MCP server '{mcp_server_name}' not found in Cursor config",
+                UserWarning,
+                stacklevel=2,
+            )
+            return
+
+        del servers[mcp_server_name]
+        self._write_mcp_config(config)
 
     async def list_mcp_servers(self) -> list[MCPServerSpec]:
-        raise NotImplementedError("list_mcp_servers is not supported for Cursor")
+        config = self._read_mcp_config()
+        try:
+            servers = self._mcp_servers(config)
+        except ValueError as error:
+            warnings.warn(str(error), UserWarning, stacklevel=2)
+            return []
+
+        result: list[MCPServerSpec] = []
+        for name, entry in servers.items():
+            if not isinstance(entry, dict):
+                warnings.warn(
+                    f"Skipping malformed MCP entry '{name}': expected object, "
+                    f"got {type(entry).__name__}",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                continue
+
+            try:
+                entry_type = self._mcp_entry_type(entry)
+                if entry_type == MCPServerType.STDIO:
+                    result.append(MCPServerSpec(
+                        name=name,
+                        type=MCPServerType.STDIO,
+                        command=entry.get("command"),
+                        args=self._string_list(entry.get("args"), "args"),
+                        env=self._string_mapping(entry.get("env"), "env"),
+                    ))
+                elif entry_type == MCPServerType.HTTP:
+                    result.append(MCPServerSpec(
+                        name=name,
+                        type=MCPServerType.HTTP,
+                        url=entry.get("url"),
+                        headers=self._string_mapping(entry.get("headers"), "headers"),
+                    ))
+                else:
+                    warnings.warn(
+                        f"Skipping malformed MCP entry '{name}': "
+                        "unsupported or missing transport",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+            except (TypeError, ValueError) as error:
+                warnings.warn(
+                    f"Skipping malformed MCP entry '{name}': {error}",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+        return result

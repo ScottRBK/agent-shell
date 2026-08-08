@@ -267,8 +267,9 @@ print(f"Session: {response.session_id}")
 > tools are auto-*rejected* but the run still completes. `allowed_tools`, `effort`, and
 > `disallowed_tools` are **ignored** — Cursor exposes no per-call tool policy or effort flag
 > (tool policy lives in `.cursor/cli.json`), so each emits a `UserWarning`. On a Free plan
-> only `model=None`/`"auto"` works. MCP servers are declared in `.cursor/mcp.json`; the
-> `add`/`remove`/`list` MCP methods raise `NotImplementedError`.
+> only `model=None`/`"auto"` works. MCP add/remove/list are supported by directly managing
+> the user-scope `~/.cursor/mcp.json` file because `cursor-agent mcp` has no add/remove
+> subcommands.
 
 ### Grok
 
@@ -339,7 +340,14 @@ await shell.add_mcp_server(MCPServerSpec(
 ))
 ```
 
-`add_mcp_server` overwrites an existing server with the same name. `remove_mcp_server` warns rather than raises when the named server is not found. `list_mcp_servers()` works for Claude Code, OpenCode, Copilot CLI, Codex, and Grok. Claude Code reads user-scope entries directly from `~/.claude.json`, and Grok from `~/.grok/config.toml`, so listing does not launch configured servers for health checks. MCP is not supported for Pi or Cursor — neither CLI exposes an add/remove subcommand, so all three MCP methods raise `NotImplementedError`.
+`add_mcp_server` adds or updates a server with the same name. Cursor preserves native fields
+that `MCPServerSpec` cannot represent when an update keeps the same transport. The configuration
+is written atomically with user-only permissions. `remove_mcp_server` warns rather than raises
+when the named server is not found. `list_mcp_servers()` works for
+Claude Code, OpenCode, Copilot CLI, Codex, Cursor, and Grok. Claude Code reads user-scope
+entries directly from `~/.claude.json`, Cursor from `~/.cursor/mcp.json`, and Grok from
+`~/.grok/config.toml`, so listing does not launch configured servers for health checks. MCP
+is not supported for Pi; all three MCP methods raise `NotImplementedError`.
 
 ## Logging
 

@@ -171,9 +171,19 @@ All adapters write to user-scope configuration:
 | OpenCode | direct JSON file write | `~/.config/opencode/opencode.json` |
 | Copilot CLI | direct JSON file write | `~/.copilot/mcp-config.json` |
 | Codex | `codex mcp add` subprocess | Codex config |
+| Cursor | direct JSON file write | `~/.cursor/mcp.json` |
 | Grok | `grok mcp add --scope user` subprocess | `~/.grok/config.toml` (managed by CLI) |
 
-Adds are idempotent (overwrite existing entries with the same name). Removes warn rather than raise when the named server is not found. Claude Code listing reads the user-scope `mcpServers` entries from `~/.claude.json` directly, avoiding the health checks and human-readable output of `claude mcp list`. Grok listing reads user-scope `mcp_servers` entries from `~/.grok/config.toml` directly for the same reason. MCP is not implemented for Pi or Cursor — all three methods raise `NotImplementedError`. Pi manages capability via `pi install` extensions (which needs investigation before wiring up); Cursor's `mcp` subcommands are login/list/list-tools/enable/disable only (no add/remove — servers are declared in `.cursor/mcp.json`), and `mcp list` reports only `name: status`, not the transport an `MCPServerSpec` needs.
+Adds are idempotent (update existing entries with the same name). Cursor preserves native fields
+that `MCPServerSpec` cannot represent when an update keeps the same transport, and writes its file
+atomically with user-only permissions. Removes warn rather than raise when the named server is not
+found. Claude Code listing reads the user-scope `mcpServers`
+entries from `~/.claude.json` directly, avoiding the health checks and human-readable output of
+`claude mcp list`. Cursor manages user-scope MCP entries directly in `~/.cursor/mcp.json` because
+its `mcp` subcommands have no add/remove commands. Grok listing reads user-scope `mcp_servers`
+entries from `~/.grok/config.toml` directly for the same reason. Pi's MCP add/remove/list methods
+raise `NotImplementedError`. Pi manages capability via `pi install` extensions, which needs
+investigation before wiring up.
 
 ## Test Philosophy
 

@@ -316,7 +316,8 @@ succeeded = saw_ok and error is None         # absent result => succeeded stays 
   **not** run your prompt, so use the stream-based check above when you care about a specific
   call's outcome.
 - **MCP server management** — `add_mcp_server`, `remove_mcp_server`, `list_mcp_servers` manage
-  the underlying CLI's MCP config (Pi and Cursor raise `NotImplementedError`).
+  user-scope MCP configuration. Pi raises `NotImplementedError`; Cursor is managed directly
+  through `~/.cursor/mcp.json` because `cursor-agent mcp` has no add/remove subcommands.
 
 See [api-reference.md](api-reference.md) for their full signatures and the `MCPServerSpec` model.
 

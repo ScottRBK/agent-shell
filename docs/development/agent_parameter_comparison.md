@@ -193,10 +193,10 @@ test checks all seven real discovery commands.
   cursor-agent ACCEPTS an unknown id — `--resume=<never-seen-uuid>` starts a session under that
   id and echoes it back rather than failing, so id identity proves the flag was passed through
   and honoured, not that a prior transcript was replayed (measured 2026-07-26)
-- **MCP**: `cursor-agent mcp` = login/list/list-tools/enable/disable only (no add/remove);
-  servers declared in `.cursor/mcp.json`. All three adapter MCP methods raise
-  `NotImplementedError` — including `list_mcp_servers`, because `mcp list` emits only
-  `name: status` and cannot rebuild an `MCPServerSpec`
+- **MCP**: `cursor-agent mcp` = login/list/list-tools/enable/disable only (no add/remove).
+  The adapter manages user-scope servers directly in `~/.cursor/mcp.json`, which provides the
+  transport details that `mcp list` omits. Writes are atomic and user-only; same-transport
+  updates preserve Cursor-native fields that `MCPServerSpec` cannot represent.
 - **Usage**: the terminal `result` event carries `usage.outputTokens` (undocumented but real)
   and `duration_ms`; there is no cost field, so `cost` is `0.0`
 
