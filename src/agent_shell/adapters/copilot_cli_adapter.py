@@ -48,7 +48,7 @@ _COPILOT_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 
 def _normalize_effort(effort: str | None) -> str | None:
-    if effort is None:
+    if effort is None or effort == "":
         return None
 
     normalized = effort.lower() if isinstance(effort, str) else None

@@ -224,6 +224,19 @@ class TestCommandConstructionIntegration:
         assert "--effort" in cmd_args
         assert cmd_args[cmd_args.index("--effort") + 1] == "high"
 
+    async def test_execute_omits_effort_flag_for_empty_string(self):
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.COPILOT_CLI)
+        ndjson = [MESSAGE_DELTA_EVENT, RESULT_EVENT_SUCCESS]
+        mock_process = _make_mock_process(ndjson)
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+            await shell.execute(cwd="/tmp", prompt="test", effort="")
+
+        # Assert
+        assert "--effort" not in mock_exec.call_args[0]
+
     async def test_prompt_is_second_argument(self):
         # Arrange
         shell = AgentShell(agent_type=AgentType.COPILOT_CLI)

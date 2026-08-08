@@ -128,9 +128,9 @@ test checks all seven real discovery commands.
 - **Headless mode**: `-p` / `--prompt` for one-shot; `--acp` for Agent Client Protocol
 - **Model**: `--model <model>`; use `auto` to let Copilot choose
 - **Effort**: `--effort` / `--reasoning-effort` with choices
-  `none|minimal|low|medium|high|xhigh|max`. AgentShell accepts effort values
-  case-insensitively, validates them against these choices, and passes the normalized lowercase
-  value to Copilot via `--effort`.
+  `none|minimal|low|medium|high|xhigh|max`. AgentShell treats `None` and `""` as omitted, so
+  Copilot uses its default. Explicit values, including `"none"`, are accepted case-insensitively,
+  validated against these choices, and passed to Copilot via `--effort` in lowercase.
 - **Allowed tools**: `--allow-tool`, `--deny-tool`, `--available-tools`,
   `--excluded-tools`, `--allow-all-tools`
 - **Auto-approve**: `--allow-all-tools`; `--allow-all` / `--yolo` also grant path and URL
