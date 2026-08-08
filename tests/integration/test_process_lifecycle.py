@@ -244,11 +244,15 @@ async def test_guardian_does_not_inherit_the_owners_file_descriptors(tmp_path):
     guardian = process_cleanup._guardians[process]
 
     try:
-        # Act
-        guardian_fds = {
-            fd: os.readlink(f"/proc/{guardian.pid}/fd/{fd}")
-            for fd in os.listdir(f"/proc/{guardian.pid}/fd")
-        }
+        # Act — /proc is a live view: an fd can close after listdir() but before readlink().
+        # That normal Linux race made the tag build flaky with FileNotFoundError. Ignore only
+        # entries that vanished; any descriptor still open is captured and asserted below.
+        guardian_fds: dict[str, str] = {}
+        for fd in os.listdir(f"/proc/{guardian.pid}/fd"):
+            try:
+                guardian_fds[fd] = os.readlink(f"/proc/{guardian.pid}/fd/{fd}")
+            except FileNotFoundError:
+                continue
 
         # Assert — a guardian must not keep an owner's output pipe, log, or native FD open.
         assert guardian_fds["1"] == "/dev/null"
