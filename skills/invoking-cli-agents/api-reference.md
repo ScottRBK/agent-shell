@@ -273,8 +273,11 @@ class AgentAdapter(Protocol):
   it rather than failing (like Pi; unlike Claude Code, OpenCode, Copilot and Codex, which all
   reject one). A matching id is therefore not proof a prior transcript was continued.
 - `duration` and `output_tokens` are real (`usage.outputTokens`); `cost` is always `0.0` — Cursor
-  reports no cost. MCP-management methods raise `NotImplementedError` (`cursor-agent mcp` has no
-  add/remove, and its `list` returns only name+status, which cannot rebuild an `MCPServerSpec`).
+  reports no cost.
+- MCP add/remove/list are supported by directly managing user-scope `~/.cursor/mcp.json`, because
+  `cursor-agent mcp` has no add/remove subcommands and its list output lacks full configuration.
+  Writes are atomic and user-only. Same-transport updates preserve Cursor-native fields that
+  `MCPServerSpec` cannot represent.
 
 ### Grok
 - Headless: `grok -p --output-format streaming-messages-json` (full assistant blocks; not

@@ -187,7 +187,7 @@ Capabilities differ by agent. `output_tokens` is populated on all of them; the r
 | Copilot CLI | ✅ | ⚠️ `bash`, `edit` only | ✅ | ❌ `0.0` | ✅ real | ✅ |
 | Codex | ❌ | ⚠️ `web_search` only | ✅ | ❌ `0.0` | ❌ `0.0` | ✅ |
 | Pi | ✅ | ⚠️ `bash`, `edit`, `read` | ✅ | ⚠️ paid providers only | ❌ `0.0` | ❌ raises |
-| Cursor | ❌ warns | ❌ none — warns | ❌ warns | ❌ `0.0` | ✅ real | ❌ raises |
+| Cursor | ❌ warns | ❌ none — warns | ❌ warns | ❌ `0.0` | ✅ real | ✅ user-scope |
 | Grok | ✅ | ✅ all canonical | ✅ | ⚠️ may be `0.0` | ✅ real | ✅ user-scope |
 
 A `✅` for `allowed_tools` means the flag is passed — but it only *enforces* with

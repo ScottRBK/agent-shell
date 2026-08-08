@@ -61,8 +61,9 @@ uv run pytest tests/e2e -v
 
 > [!WARNING]
 > E2E tests may mutate real user configuration files. MCP tests can call an agent's real
-> `mcp add` and `mcp remove` commands, affecting files such as `~/.claude.json`,
-> `~/.config/opencode/opencode.json`, `~/.copilot/mcp-config.json`, or Codex configuration.
+> MCP commands or edit its config directly, affecting files such as `~/.claude.json`,
+> `~/.config/opencode/opencode.json`, `~/.copilot/mcp-config.json`, `~/.cursor/mcp.json`,
+> or Codex configuration.
 > Tests use unique names and `finally` cleanup where implemented, but forced termination,
 > a CLI crash, or a machine failure can prevent cleanup. The CLI may also rewrite config
 > formatting even when the temporary entry is removed. Review the selected E2E test before
