@@ -13,7 +13,7 @@ shapes a normalized failure can take:
 Success is the same rule the health probe applies: a `result` event with content == "ok"
 and no `error` event. The first group drives that from the public AgentShell.execute()
 boundary with only the subprocess mocked, so the real adapter and the real collector run;
-the last group then pins the identical contract on all six adapters.
+the last group then pins the identical contract on all adapters.
 """
 
 import json
@@ -396,7 +396,7 @@ class TestMissingResultFailure:
 
 
 class TestEveryAdapterObeysTheContract:
-    """The rule is normalized, so it must hold identically for all six adapters."""
+    """The rule is normalized, so it must hold identically for every adapter."""
 
     @pytest.mark.parametrize("adapter_cls", ADAPTERS)
     async def test_ok_result_returns_a_response(self, adapter_cls):

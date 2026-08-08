@@ -1,6 +1,6 @@
 """Transport-level regression tests shared across every adapter.
 
-All six adapters share the same subprocess streaming boilerplate: a
+All adapters share the same subprocess streaming boilerplate: a
 `while True: chunk = await process.stdout.read(65536)` loop that decodes and
 splits NDJSON, followed by a post-loop stderr read. Three latent bugs live in
 that shared block, so they are guarded here ONCE, parametrized across all
@@ -41,6 +41,7 @@ from agent_shell.adapters.copilot_cli_adapter import CopilotCLIAdapter
 from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
 from agent_shell.adapters.pi_adapter import PiAdapter
 from agent_shell.adapters.cursor_adapter import CursorAdapter
+from agent_shell.adapters.grok_adapter import GrokAdapter
 
 
 # Per-adapter builder for the one NDJSON event that carries assistant text, so a
@@ -72,6 +73,11 @@ def _cursor_text(text: str) -> dict:
             "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}
 
 
+def _grok_text(text: str) -> dict:
+    return {"type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}
+
+
 ADAPTERS = [
     pytest.param(ClaudeCodeAdapter, _claude_text, id="claude"),
     pytest.param(CodexAdapter, _codex_text, id="codex"),
@@ -79,6 +85,7 @@ ADAPTERS = [
     pytest.param(CopilotCLIAdapter, _copilot_text, id="copilot"),
     pytest.param(PiAdapter, _pi_text, id="pi"),
     pytest.param(CursorAdapter, _cursor_text, id="cursor"),
+    pytest.param(GrokAdapter, _grok_text, id="grok"),
 ]
 
 
@@ -400,7 +407,7 @@ def _release_spy(adapter):
 async def test_normal_path_reports_the_child_as_exited(adapter_cls, text_event):
     # Arrange — B1: the teardown used to work out for itself whether the child was still
     # running, from `process.returncode is None`, which is exactly what a reaped-but-not-yet-
-    # reported child looks like. It is now told instead, so each of the six adapters has to
+    # reported child looks like. It is now told instead, so each adapter has to
     # actually pass the truth about the path it took — a claim only checkable at the call.
     adapter = adapter_cls()
     process = _process_with_stdout([_ndjson(OK_RESULT_EVENT[adapter_cls]), b""])

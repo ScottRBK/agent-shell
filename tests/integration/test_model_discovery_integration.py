@@ -98,6 +98,11 @@ def _make_discovery_process(agent_type: AgentType, selector: str):
             "provider      model      context  max-out  thinking  images\n"
             f"{provider}  {model}  272K     128K     yes       yes\n"
         )
+    if agent_type == AgentType.GROK:
+        return _make_completed_process(
+            f"Default model: {selector}\n\n"
+            f"Available models:\n  * {selector} (default)\n"
+        )
     return _make_completed_process(
         f"Available models\n\n{selector} - Selected model\n"
     )
@@ -112,6 +117,7 @@ class TestModelDiscoveryIntegration:
             AgentType.CODEX,
             AgentType.PI,
             AgentType.CURSOR,
+            AgentType.GROK,
         ],
     )
     async def test_text_discovery_rejects_non_utf8_output_clearly(self, agent_type):
@@ -142,6 +148,7 @@ class TestModelDiscoveryIntegration:
                 "claude-opus-4-8[context=1m,effort=high,fast=false]",
                 "--model",
             ),
+            (AgentType.GROK, "grok-4.5", "-m"),
         ],
     )
     async def test_discovered_selector_reaches_the_cli_unchanged(
@@ -250,6 +257,34 @@ class TestModelDiscoveryIntegration:
         # Act / Assert
         with patch("asyncio.create_subprocess_exec", return_value=process):
             with pytest.raises(RuntimeError, match="Unexpected.*cursor-agent models"):
+                await shell.list_models(cwd="/tmp")
+
+    async def test_grok_returns_exact_selectable_model_strings(self):
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.GROK)
+        process = _make_completed_process(
+            "You are logged in with grok.com.\n\n"
+            "Default model: grok-4.5\n\n"
+            "Available models:\n"
+            "  * grok-4.5 (default)\n"
+        )
+
+        # Act
+        with patch("asyncio.create_subprocess_exec", return_value=process) as mock_exec:
+            models = await shell.list_models(cwd="/tmp")
+
+        # Assert
+        assert models == ["grok-4.5"]
+        assert mock_exec.call_args.args[:2] == ("grok", "models")
+
+    async def test_grok_rejects_output_without_available_models_section(self):
+        # Arrange
+        shell = AgentShell(agent_type=AgentType.GROK)
+        process = _make_completed_process("Default model: grok-4.5\n")
+
+        # Act / Assert
+        with patch("asyncio.create_subprocess_exec", return_value=process):
+            with pytest.raises(RuntimeError, match="Unexpected.*grok models"):
                 await shell.list_models(cwd="/tmp")
 
     async def test_pi_returns_provider_qualified_model_strings(self):

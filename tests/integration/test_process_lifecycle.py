@@ -26,6 +26,7 @@ from agent_shell.adapters.claude_code_adapter import ClaudeCodeAdapter
 from agent_shell.adapters.codex_adapter import CodexAdapter
 from agent_shell.adapters.copilot_cli_adapter import CopilotCLIAdapter
 from agent_shell.adapters.cursor_adapter import CursorAdapter
+from agent_shell.adapters.grok_adapter import GrokAdapter
 from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
 from agent_shell.adapters.pi_adapter import PiAdapter
 
@@ -39,6 +40,7 @@ AGENT_TYPE = {
     CopilotCLIAdapter: AgentType.COPILOT_CLI,
     PiAdapter: AgentType.PI,
     CursorAdapter: AgentType.CURSOR,
+    GrokAdapter: AgentType.GROK,
 }
 
 # The executable name each adapter puts at argv[0].
@@ -49,6 +51,7 @@ CLI_NAME = {
     CopilotCLIAdapter: "copilot",
     PiAdapter: "pi",
     CursorAdapter: "cursor-agent",
+    GrokAdapter: "grok",
 }
 
 # Reads its script from the environment so one file serves every adapter and every scenario.

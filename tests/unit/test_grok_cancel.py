@@ -1,0 +1,21 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from agent_shell.adapters.grok_adapter import GrokAdapter
+
+
+class TestCancel:
+    async def test_kills_active_processes_and_clears_list(self):
+        # Arrange
+        adapter = GrokAdapter()
+        mock_process = AsyncMock()
+        mock_process.pid = 12345
+        adapter._active_processes = [mock_process]
+
+        # Act
+        mock_kill = MagicMock()
+        with patch("agent_shell.adapters.grok_adapter.kill_process_group", mock_kill):
+            await adapter.cancel()
+
+        # Assert
+        mock_kill.assert_called_once_with(mock_process)
+        assert len(adapter._active_processes) == 0

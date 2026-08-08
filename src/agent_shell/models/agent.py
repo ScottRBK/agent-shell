@@ -8,6 +8,7 @@ class AgentType(StrEnum):
     CODEX = "codex"
     PI = "pi"
     CURSOR = "cursor"
+    GROK = "grok"
 
 class MCPServerType(StrEnum):
     STDIO = "stdio"

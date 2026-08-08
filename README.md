@@ -6,8 +6,8 @@ and returning the output that can be used programatically as a unified contract
 
 - **One unified contract** — the same `execute`, `stream`, `health_check`, and
   `list_models` API across every agent; swap the backend without changing consuming code.
-- **Six CLI agents** — Claude Code, OpenCode, Copilot CLI, Codex, Pi, and Cursor behind a
-  common adapter protocol.
+- **Seven CLI agents** — Claude Code, OpenCode, Copilot CLI, Codex, Pi, Cursor, and Grok
+  behind a common adapter protocol.
 - **Execute or stream** — get one `AgentResponse` (raises `AgentExecutionError` on a failed run),
   or async-iterate normalized `StreamEvent`s with optional thinking/reasoning.
 - **Session resumption** — continue any conversation by passing back its `session_id`.
@@ -55,7 +55,7 @@ Or install both skills globally for every coding agent supported by AgentShell:
 ```bash
 npx skills add ScottRBK/agent-shell --global \
   --skill '*' \
-  --agent claude-code opencode github-copilot codex pi cursor \
+  --agent claude-code opencode github-copilot codex pi cursor grok \
   --yes
 ```
 
@@ -204,10 +204,10 @@ response = await shell.execute(
   `mcp__server__tool`, or a harness-specific name like `Write`, or Copilot's `view`).
 - Deny takes precedence over auto-approve on every backend that supports it.
 - Where a backend cannot enforce a deny, the adapter emits a `UserWarning` listing the
-  ignored tools rather than failing silently. Coverage varies: Claude and OpenCode enforce
-  all five canonical names; Copilot enforces only `bash`/`edit` canonically (use a verbatim
-  name for its other tools); Codex can only deny `web_search`; Cursor cannot enforce any
-  per-call deny (its tool policy lives in `.cursor/cli.json`).
+  ignored tools rather than failing silently. Coverage varies: Claude, OpenCode, and Grok
+  enforce all five canonical names; Copilot enforces only `bash`/`edit` canonically (use a
+  verbatim name for its other tools); Codex can only deny `web_search`; Cursor cannot
+  enforce any per-call deny (its tool policy lives in `.cursor/cli.json`).
 - Denying `edit` or `read` is **best-effort**: a model can still modify or read files through
   the shell, so also deny `bash` when you need a hard file boundary.
 
@@ -270,6 +270,36 @@ print(f"Session: {response.session_id}")
 > only `model=None`/`"auto"` works. MCP servers are declared in `.cursor/mcp.json`; the
 > `add`/`remove`/`list` MCP methods raise `NotImplementedError`.
 
+### Grok
+
+```python
+from agent_shell.shell import AgentShell
+from agent_shell.models.agent import AgentType
+
+shell = AgentShell(agent_type=AgentType.GROK)
+
+response = await shell.execute(
+    cwd="/path/to/project",
+    prompt="Can you tell me about this project?",
+    model="grok-4.5",
+)
+
+print(response.response)
+print(f"Session: {response.session_id}")
+print(f"Cost: ${response.cost:.4f}")
+```
+
+> **Note:** Grok runs headlessly via `grok -p --output-format streaming-messages-json`
+> (full assistant blocks — not token-delta `streaming-json`, which would break
+> newline-joined text collection). With `auto_approve=True` (the default) the adapter
+> passes `--always-approve`. `effort` maps to `--reasoning-effort`, `allowed_tools` to
+> `--tools`, and `disallowed_tools` to `--disallowed-tools` (canonical `bash` maps to
+> `run_terminal_cmd` — the working deny id, not init.tools' `run_terminal_command`).
+> The terminal `result` event carries cost (may be `0` on some auth paths), duration, and
+> raw `usage.output_tokens` (reasoning is already inside that figure when reported).
+> MCP add/remove/list are supported via `grok mcp` with **user scope only**
+> (`~/.grok/config.toml`).
+
 ## MCP Servers
 
 Register MCP servers for any supported agent through a unified API. All adapters use user-scope configuration so registrations persist across the agent's `execute`/`stream` calls.
@@ -309,7 +339,7 @@ await shell.add_mcp_server(MCPServerSpec(
 ))
 ```
 
-`add_mcp_server` overwrites an existing server with the same name. `remove_mcp_server` warns rather than raises when the named server is not found. `list_mcp_servers()` works for Claude Code, OpenCode, Copilot CLI, and Codex. Claude Code reads user-scope entries directly from `~/.claude.json`, so listing does not launch configured servers for health checks. MCP is not supported for Pi or Cursor — neither CLI exposes an add/remove subcommand, so all three MCP methods raise `NotImplementedError`.
+`add_mcp_server` overwrites an existing server with the same name. `remove_mcp_server` warns rather than raises when the named server is not found. `list_mcp_servers()` works for Claude Code, OpenCode, Copilot CLI, Codex, and Grok. Claude Code reads user-scope entries directly from `~/.claude.json`, and Grok from `~/.grok/config.toml`, so listing does not launch configured servers for health checks. MCP is not supported for Pi or Cursor — neither CLI exposes an add/remove subcommand, so all three MCP methods raise `NotImplementedError`.
 
 ## Logging
 

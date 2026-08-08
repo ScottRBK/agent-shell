@@ -16,6 +16,7 @@ AGENT_TYPES = [
     pytest.param(AgentType.CODEX, id="codex"),
     pytest.param(AgentType.PI, id="pi"),
     pytest.param(AgentType.CURSOR, id="cursor"),
+    pytest.param(AgentType.GROK, id="grok"),
 ]
 
 

@@ -9,6 +9,7 @@ from agent_shell.adapters.copilot_cli_adapter import CopilotCLIAdapter
 from agent_shell.adapters.codex_adapter import CodexAdapter
 from agent_shell.adapters.pi_adapter import PiAdapter
 from agent_shell.adapters.cursor_adapter import CursorAdapter
+from agent_shell.adapters.grok_adapter import GrokAdapter
 
 
 class TestResolveAdapter:
@@ -53,6 +54,13 @@ class TestResolveAdapter:
 
         # Assert
         assert isinstance(shell._adapter, CursorAdapter)
+
+    def test_resolves_grok(self):
+        # Arrange / Act
+        shell = AgentShell(agent_type=AgentType.GROK)
+
+        # Assert
+        assert isinstance(shell._adapter, GrokAdapter)
 
     def test_raises_for_agent_type_with_no_registered_adapter(self, monkeypatch):
         # Arrange — every AgentType now has an adapter, so the guard is unreachable through

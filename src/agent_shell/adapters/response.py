@@ -1,7 +1,7 @@
 """Shared stream-to-response collection for all adapters.
 
 Every adapter's `execute` delegates here, the way every `health_check` delegates to
-health.py. The collection was byte-for-byte identical in all six adapters, and so was the
+health.py. The collection was byte-for-byte identical across adapters, and so was the
 bug in it: it kept the text and the metrics and threw the run's outcome away, so a failed
 run came back as a success-shaped AgentResponse with an empty answer (issue #11).
 

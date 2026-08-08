@@ -4,8 +4,8 @@ description: >-
   Use when invoking a CLI coding agent from Python, delegating to a sub-agent, discovering
   available model strings, orchestrating agents, streaming output, resuming sessions,
   restricting tools, or checking agent/model health. Supports Claude Code, OpenCode,
-  Copilot CLI, Codex, Pi, and Cursor. Keywords: AgentShell, list_models, headless agent,
-  model discovery, subprocess, allowed_tools, disallowed_tools, session_id, cost,
+  Copilot CLI, Codex, Pi, Cursor, and Grok. Keywords: AgentShell, list_models, headless
+  agent, model discovery, subprocess, allowed_tools, disallowed_tools, session_id, cost,
   output_tokens.
 ---
 
@@ -21,7 +21,7 @@ passes `model` strings through verbatim and does not manage credentials.
 
 ## When to Use
 
-- You need to invoke Claude Code, OpenCode, Copilot CLI, Codex, Pi, or Cursor from Python
+- You need to invoke Claude Code, OpenCode, Copilot CLI, Codex, Pi, Cursor, or Grok from Python
 - You want to delegate a coding task to a sub-agent and collect the result
 - You need to orchestrate multi-step workflows across agents
 - You want to stream agent output in real-time
@@ -151,11 +151,11 @@ Both `execute()` and `stream()` take the same parameters.
 |-----------|------|---------|---------|
 | `cwd` | `str` | required | Working directory (must exist, else `ValueError`) |
 | `prompt` | `str` | required | Task or question for the agent |
-| `allowed_tools` | `list[str] \| None` | `None` | Whitelist of tools (agent-native names). `None` = all tools. Honoured by Claude Code, Copilot CLI, Pi; ignored by OpenCode, Codex and Cursor. **Only actually enforced when `auto_approve=False`** (see Tool Restriction). |
+| `allowed_tools` | `list[str] \| None` | `None` | Whitelist of tools (agent-native names). `None` = all tools. Honoured by Claude Code, Copilot CLI, Pi, Grok; ignored by OpenCode, Codex and Cursor. **Only actually enforced when `auto_approve=False`** on some agents (see Tool Restriction). |
 | `disallowed_tools` | `list[str] \| None` | `None` | Denylist using a canonical vocabulary (see Tool Restriction). Deny takes precedence over allow **and** over `auto_approve`, but covers only built-in tools. Enforcement varies per agent; unenforceable denies emit a `UserWarning`. |
 | `model` | `str \| None` | `None` | Model alias or name, passed to the CLI verbatim (e.g. `"sonnet"`, `"opencode/big-pickle"`) |
-| `effort` | `str \| None` | `None` | Reasoning effort: `"low"`, `"medium"`, `"high"`, etc. Claude Code, Copilot, Codex, Pi. **Ignored by OpenCode** (silently) **and Cursor** (warns). |
-| `include_thinking` | `bool` | `False` | Yield `thinking` events in `stream()`. Claude Code, Copilot, Pi, Cursor. **Dropped by `execute()`** (which keeps only text). |
+| `effort` | `str \| None` | `None` | Reasoning effort: `"low"`, `"medium"`, `"high"`, etc. Claude Code, Copilot, Codex, Pi, Grok. **Ignored by OpenCode** (silently) **and Cursor** (warns). |
+| `include_thinking` | `bool` | `False` | Yield `thinking` events in `stream()`. Claude Code, Copilot, Pi, Cursor, Grok. **Dropped by `execute()`** (which keeps only text). |
 | `auto_approve` | `bool` | `True` | Skip tool permission prompts. Mapped on every adapter (Pi *requires* a trust decision — the default avoids a hang). **On Claude Code the default `True` sends `--dangerously-skip-permissions`, which bypasses `allowed_tools`.** |
 | `session_id` | `str \| None` | `None` | Resume a previous session |
 
@@ -175,6 +175,7 @@ AgentType.COPILOT_CLI   # GitHub Copilot CLI
 AgentType.CODEX         # OpenAI Codex CLI
 AgentType.PI            # Pi coding agent
 AgentType.CURSOR        # Cursor CLI (cursor-agent)
+AgentType.GROK          # xAI Grok Build CLI (grok)
 ```
 
 Capabilities differ by agent. `output_tokens` is populated on all of them; the rest varies:
@@ -187,6 +188,7 @@ Capabilities differ by agent. `output_tokens` is populated on all of them; the r
 | Codex | ❌ | ⚠️ `web_search` only | ✅ | ❌ `0.0` | ❌ `0.0` | ✅ |
 | Pi | ✅ | ⚠️ `bash`, `edit`, `read` | ✅ | ⚠️ paid providers only | ❌ `0.0` | ❌ raises |
 | Cursor | ❌ warns | ❌ none — warns | ❌ warns | ❌ `0.0` | ✅ real | ❌ raises |
+| Grok | ✅ | ✅ all canonical | ✅ | ⚠️ may be `0.0` | ✅ real | ✅ user-scope |
 
 A `✅` for `allowed_tools` means the flag is passed — but it only *enforces* with
 `auto_approve=False`; `disallowed_tools` covers only built-in tools. See Tool Restriction.
@@ -300,10 +302,10 @@ succeeded = saw_ok and error is None         # absent result => succeeded stays 
 - `output_tokens` — the portable "how much did it generate" signal; populated on the `result`
   event of every adapter. It reads `0` when the `result` event never arrives (a truncated turn),
   so it is not a standalone liveness check — pair it with the success check above.
-- `cost` — real for Claude Code and paid Pi providers; frequently `0.0` for OpenCode,
-  Copilot, Codex, and always `0.0` for Cursor (they don't report it). Don't treat
-  `cost == 0` as "the call failed".
-- `duration` — real for Claude Code, Copilot CLI, and Cursor; `0.0` elsewhere.
+- `cost` — real for Claude Code, Grok (usually), and paid Pi providers; frequently `0.0` for
+  OpenCode, Copilot, Codex, and always `0.0` for Cursor (they don't report it). Grok may also
+  report `0.0` on some OAuth/pool paths. Don't treat `cost == 0` as "the call failed".
+- `duration` — real for Claude Code, Copilot CLI, Cursor, and Grok; `0.0` elsewhere.
 
 ## Other Capabilities
 
@@ -335,8 +337,8 @@ logging.getLogger("agent_shell").addHandler(logging.StreamHandler())
 | Get a complete answer | `await shell.execute(cwd, prompt)` |
 | Stream events live | `async for event in shell.stream(cwd, prompt)` |
 | Continue a conversation | Pass `session_id=response.session_id` |
-| Whitelist tools (Claude/Copilot/Pi) | `allowed_tools=["Read", "Glob"]` |
-| Deny tools (Claude/OpenCode/Copilot/Pi) | `disallowed_tools=["edit", "bash"]` |
+| Whitelist tools (Claude/Copilot/Pi/Grok) | `allowed_tools=["Read", "Glob"]` |
+| Deny tools (Claude/OpenCode/Copilot/Pi/Grok) | `disallowed_tools=["edit", "bash"]` |
 | Track usage | Read `response.output_tokens` (portable) or `response.cost` |
 | Discover selectable models | `await shell.list_models(cwd)` |
 | Use a specific model | Pass one returned string as `model=...` |

@@ -21,6 +21,7 @@ class AgentType(StrEnum):
     CODEX = "codex"
     PI = "pi"
     CURSOR = "cursor"
+    GROK = "grok"
 ```
 
 ### AgentResponse
@@ -274,3 +275,20 @@ class AgentAdapter(Protocol):
 - `duration` and `output_tokens` are real (`usage.outputTokens`); `cost` is always `0.0` — Cursor
   reports no cost. MCP-management methods raise `NotImplementedError` (`cursor-agent mcp` has no
   add/remove, and its `list` returns only name+status, which cannot rebuild an `MCPServerSpec`).
+
+### Grok
+- Headless: `grok -p --output-format streaming-messages-json` (full assistant blocks; not
+  token-delta `streaming-json`, which would break newline-joined text collection).
+- `model` → `-m` / `--model` (e.g. `"grok-4.5"`). `list_models()` parses `grok models` text.
+- `allowed_tools` → `--tools`; `disallowed_tools` → `--disallowed-tools` with all five canonical
+  names. **Important:** `bash` maps to `run_terminal_cmd` (the working deny id). Init lists the
+  shell tool as `run_terminal_command`, but denying that longer name is a no-op on grok 1.0.0.
+  `edit` → `search_replace,write`.
+- `effort` → `--reasoning-effort`; `auto_approve` → `--always-approve`; `include_thinking` is
+  honoured from assistant thinking blocks.
+- Session resume → `--resume <id>`. `system/init` and `result` carry `session_id`.
+- `cost` comes from `result.total_cost_usd` (may be `0.0` on some OAuth/pool paths);
+  `duration` from `duration_ms`; `output_tokens` is raw `usage.output_tokens` (reasoning is a
+  subset when present — do not add `reasoning_tokens`).
+- MCP via `grok mcp add|remove --scope user` only (unscoped remove can hit project config).
+  `list_mcp_servers()` reads `~/.grok/config.toml`.

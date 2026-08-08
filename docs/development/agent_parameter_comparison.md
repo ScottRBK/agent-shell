@@ -1,10 +1,11 @@
 # Agent CLI Parameter Comparison
 
 Comparison of headless/non-interactive configuration across supported CLI coding agents.
-Last updated: 2026-08-05
+Last updated: 2026-08-08
 
-> The summary matrix below has no Pi or Cursor column (it predates both adapters); see the
-> per-agent detail sections, the model-discovery section, and the `disallowed_tools` table.
+> The summary matrix below has no Pi, Cursor, or Grok column (it predates those adapters);
+> see the per-agent detail sections, the model-discovery section, and the
+> `disallowed_tools` table.
 
 > Every "measured 2026-07-26" claim below comes from a real three-call run per agent (first
 > turn, resume on the returned id, then a session-less turn), recorded by the resume e2e tests
@@ -55,6 +56,7 @@ Discovery reads CLI metadata and makes no inference call.
 | Codex | `codex debug models` | visible model `slug` |
 | Pi | `pi --no-approve --list-models` | `provider/model` |
 | Cursor | `cursor-agent models` | ID before the first ` - ` |
+| Grok | `grok models` | name after optional `* `, before `(default)` |
 
 Important semantics:
 
@@ -74,9 +76,9 @@ Important semantics:
   malformed protocol/output failures are surfaced with actionable errors.
 - AgentShell does not cache or replace results with a static fallback catalog.
 
-The behavior was verified against all six installed CLIs on 2026-08-02 without inference
-spend. CI covers captured real outputs through `AgentShell`; a local E2E test checks all six
-real discovery commands.
+The behavior was verified against the installed CLIs on 2026-08-08 without inference
+spend (Grok included). CI covers captured real outputs through `AgentShell`; a local E2E
+test checks all seven real discovery commands.
 
 ## Claude Code
 
@@ -198,6 +200,54 @@ real discovery commands.
 - **Usage**: the terminal `result` event carries `usage.outputTokens` (undocumented but real)
   and `duration_ms`; there is no cost field, so `cost` is `0.0`
 
+## Grok (xAI Grok Build)
+
+Flags below are the ones the adapter actually emits (`_build_command` in
+`src/agent_shell/adapters/grok_adapter.py`); this is not a full survey of the Grok CLI.
+Measured against grok 1.0.0 (3cd0d0cbce) on 2026-08-08.
+
+- **Headless mode**: `-p` / `--single <PROMPT>` with
+  `--output-format streaming-messages-json` (Anthropic Messages NDJSON on stdout).
+  The adapter deliberately does **not** use `streaming-json`: that format emits token
+  `text.data` fragments, and execute()'s `"\n".join` over text events would explode
+  replies (same class of bug as issue #6; pi waits for `text_end`, copilot uses full
+  `assistant.message`)
+- **Model**: `-m` / `--model` (e.g. `grok-4.5`). `grok models` prints plain text
+  (`Default model:` + `Available models:` list); the adapter returns the bare selectors
+- **Effort**: `--reasoning-effort` / `--effort`
+  (`none|minimal|low|medium|high|xhigh|max`)
+- **Allowed tools**: `--tools` (comma-joined native tool ids such as `read_file,list_dir`)
+- **Disallowed tools**: `--disallowed-tools` (comma-joined). Canonical map (measured):
+  `bash`→`run_terminal_cmd` (NOT `run_terminal_command` — that id appears in
+  `system/init.tools` but is a no-op as a deny), `edit`→`search_replace,write`,
+  `read`→`read_file`, `web_search`/`web_fetch` one-to-one
+- **Auto-approve**: `--always-approve`
+- **Output format**: adapter uses `streaming-messages-json` only
+- **Working directory**: process cwd (also has `--cwd`, unused by the adapter)
+- **Session**: `--resume` / `-r` `[SESSION_ID_OR_TITLE]`, `--continue`, `--session-id`
+  (new id only). The adapter resumes with `--resume <id>`. `system/init` and `result`
+  carry `session_id`; a resumed run should report the same id (see e2e resume test)
+- **Usage / cost**: terminal `result` carries `total_cost_usd` (may be `0` on some
+  OAuth/pool paths), `duration_ms`, and `usage.output_tokens`. When
+  `usage.reasoning_tokens` is present it is a **subset** of `output_tokens` (Grok's
+  `total_tokens` math uses `output_tokens` alone) — AgentShell reports raw
+  `output_tokens` and must not add them. `duration = duration_ms/1000`
+- **Stream events (adapter mapping)** — Cursor/Claude-shaped:
+  - `system/init` → `StreamEvent(type="system", session_id=...)`
+  - `assistant.message.content[]` text blocks → `StreamEvent(type="text")`
+  - thinking blocks → `StreamEvent(type="thinking")` when `include_thinking`
+  - `tool_use` / `server_tool_use` blocks → `StreamEvent(type="tool_use", content=name)`
+  - `result` → `StreamEvent(type="result", content="ok"|"error", ...)` via `is_error`;
+    optional `errors[]` populates `StreamEvent.error`
+- **MCP**: full CLI — `grok mcp add|remove|list|enable|disable|doctor`. Adapter uses
+  `grok mcp add --scope user` (add-or-update; no pre-remove) and
+  `grok mcp remove --scope user` (unscoped remove can hit project config). Listing reads
+  `~/.grok/config.toml` `[mcp_servers.*]` (stdio: `command`/`args`/`env`; http:
+  `url`/`headers`)
+- **Auth**: `grok login` or `XAI_API_KEY`. Model listing works while logged in via
+  grok.com account; execution requires auth
+- **Project rules**: reads `AGENTS.md` and `CLAUDE.md` (Claude Code compatible)
+
 ## Pi
 
 Flags below are the ones the adapter actually emits (`_build_command` in
@@ -253,6 +303,7 @@ through **verbatim** (e.g. `mcp__server__tool`, or a harness-specific name like 
 | Codex | `-c web_search="disabled"` only | no name-based deny; web_search key verified on codex-cli 0.133.0 but version-fragile (upstream `web_search_mode`), guarded by an e2e test; every other canonical/verbatim name warns and is ignored |
 | Cursor | none (no per-call flag) | tool policy is config-file only (`.cursor/cli.json`); the adapter has no `canonical → native` map, so **every** deny (canonical or verbatim) warns and is ignored |
 | Pi | `--exclude-tools` (comma-joined) | `edit` → `edit,write`; no web tool, so those warn |
+| Grok | `--disallowed-tools` (comma-joined) | `bash`→`run_terminal_cmd` (not init.tools' `run_terminal_command`); `edit`→`search_replace,write`; `read`→`read_file`; web tools one-to-one |
 
 When an adapter cannot honor a requested canonical deny it emits a `UserWarning` listing
 the ignored names rather than silently dropping the deny (fail-loud). A caller who knows a
