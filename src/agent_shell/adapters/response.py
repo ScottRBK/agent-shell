@@ -56,12 +56,18 @@ async def collect_response(
     duration = next((e.duration for e in reversed(chunks) if e.type == "result"), 0.0)
     output_tokens = next((e.output_tokens for e in reversed(chunks) if e.type == "result"), 0)
     returned_session_id = next((e.session_id for e in chunks if e.session_id), None)
+    process_failure = next(
+        (e for e in chunks if e.type == "error" and e.returncode is not None),
+        None,
+    )
 
     reason = failure_reason(chunks)
     if reason is not None:
         raise AgentExecutionError(
             reason, response=text, cost=cost, session_id=returned_session_id,
             duration=duration, output_tokens=output_tokens,
+            returncode=(process_failure.returncode if process_failure else None),
+            signal=(process_failure.signal if process_failure else None),
         )
 
     return AgentResponse(

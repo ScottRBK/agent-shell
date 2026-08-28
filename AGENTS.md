@@ -8,6 +8,8 @@ A lightweight, async Python package that executes CLI coding agents headlessly a
 classDiagram
     class AgentShell {
         -AgentAdapter _adapter
+        +ExecutionHost execution_host
+        +IsolationPolicy isolation_policy
         +execute(cwd, prompt, ...) AgentResponse
         +stream(cwd, prompt, ...) AsyncIterator~StreamEvent~
         +health_check(cwd, model, timeout) HealthCheckResult
@@ -49,6 +51,8 @@ classDiagram
         +str session_id
         +float duration
         +int output_tokens
+        +int returncode
+        +int signal
     }
 
     class MCPServerSpec {
@@ -88,7 +92,38 @@ classDiagram
         +str session_id
         +int output_tokens
         +str error
+        +int returncode
+        +int signal
     }
+
+    class ExecutionHost {
+        <<Protocol>>
+        +launch(command, cwd, env, stdin, isolation_policy) RunHandle
+    }
+
+    class NativeExecutionHost {
+        +launch(command, cwd, env, stdin, isolation_policy) NativeRunHandle
+    }
+
+    class IsolationPolicy {
+        <<Protocol>>
+        +prepare(command, env) PreparedLaunch
+    }
+
+    class NoIsolation
+    class LinuxPidNamespaceIsolation
+
+    class RunHandle {
+        <<Protocol>>
+        +int pid
+        +int returncode
+        +wait() int
+        +communicate(input) tuple
+        +cancel() None
+        +release() None
+    }
+
+    class NativeRunHandle
 
     class AgentType {
         <<StrEnum>>
@@ -98,9 +133,17 @@ classDiagram
         CODEX
         PI
         CURSOR
+        GROK
     }
 
     AgentShell --> AgentAdapter : delegates to
+    AgentShell --> ExecutionHost : selects
+    AgentShell --> IsolationPolicy : selects
+    NativeExecutionHost ..|> ExecutionHost : satisfies
+    NativeExecutionHost --> NativeRunHandle : creates
+    NativeRunHandle ..|> RunHandle : satisfies
+    NoIsolation ..|> IsolationPolicy : satisfies
+    LinuxPidNamespaceIsolation ..|> IsolationPolicy : satisfies
     AgentShell --> AgentType : resolves via
     ClaudeCodeAdapter ..|> AgentAdapter : satisfies
     AgentShell ..> AgentResponse : returns on success
@@ -112,7 +155,16 @@ classDiagram
     ClaudeCodeAdapter ..> StreamEvent : parses NDJSON into
 ```
 
-The adapter pattern uses Python's `Protocol` (structural typing) rather than ABC, so adapters satisfy the contract implicitly without inheritance. Each adapter manages its own subprocess lifecycle, translating agent-specific CLI flags and NDJSON output into the shared `StreamEvent`/`AgentResponse` models.
+The adapter pattern uses Python's `Protocol` (structural typing) rather than ABC, so adapters satisfy the contract implicitly without inheritance. Each adapter translates agent-specific CLI flags and NDJSON output into the shared `StreamEvent`/`AgentResponse` models, while the selected `ExecutionHost` owns process creation and returns a per-run `RunHandle`.
+
+Execution location and protection are separate axes. Existing callers default to
+`NativeExecutionHost()` plus `NoIsolation()`. `LinuxPidNamespaceIsolation` is an opt-in direct
+signal boundary: a tiny init/reaper is PID 1 and the CLI is PID 2 or later, so child-namespace
+processes cannot see or signal AgentShell's ancestors. It requires Linux, `unshare`, and enabled
+unprivileged user/PID namespaces; an unavailable explicit request raises
+`IsolationUnavailableError` and never falls back. This is not a general sandbox and does not
+restrict filesystem, credentials, network, tools, or resources. The host/policy applies to
+`execute()`, `stream()`, and `health_check()`; model discovery and MCP configuration remain local.
 
 `output_tokens` is a cost measure — the billed output-token count, which **includes reasoning tokens** (billed at the output rate). Each adapter normalises this so the value is consistent across agents (e.g. OpenCode reports reasoning in a sibling field, so its adapter adds it back).
 

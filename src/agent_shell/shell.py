@@ -2,16 +2,27 @@ import asyncio
 from pathlib import Path
 from typing import AsyncIterator
 
-from agent_shell.models.agent import AgentType, AgentResponse, StreamEvent, MCPServerSpec, HealthCheckResult
 from agent_shell.adapters.agent_adapter_protocol import AgentAdapter
 from agent_shell.adapters.claude_code_adapter import ClaudeCodeAdapter
-from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
-from agent_shell.adapters.copilot_cli_adapter import CopilotCLIAdapter
 from agent_shell.adapters.codex_adapter import CodexAdapter
-from agent_shell.adapters.pi_adapter import PiAdapter
+from agent_shell.adapters.copilot_cli_adapter import CopilotCLIAdapter
 from agent_shell.adapters.cursor_adapter import CursorAdapter
 from agent_shell.adapters.grok_adapter import GrokAdapter
-
+from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
+from agent_shell.adapters.pi_adapter import PiAdapter
+from agent_shell.execution import (
+    ExecutionHost,
+    IsolationPolicy,
+    NativeExecutionHost,
+    NoIsolation,
+)
+from agent_shell.models.agent import (
+    AgentResponse,
+    AgentType,
+    HealthCheckResult,
+    MCPServerSpec,
+    StreamEvent,
+)
 
 # Every AgentType must appear here. The lookup below still guards against a member that
 # does not, because adding an AgentType and forgetting the registry entry is an easy miss
@@ -28,7 +39,18 @@ _ADAPTERS: dict[AgentType, type[AgentAdapter]] = {
 
 
 class AgentShell():
-    def __init__(self, agent_type: AgentType):
+    def __init__(
+            self,
+            agent_type: AgentType,
+            execution_host: ExecutionHost | None = None,
+            isolation_policy: IsolationPolicy | None = None,
+    ):
+        self.execution_host = (
+            execution_host if execution_host is not None else NativeExecutionHost()
+        )
+        self.isolation_policy = (
+            isolation_policy if isolation_policy is not None else NoIsolation()
+        )
         self._adapter = self._resolve_adapter(agent_type=agent_type)
 
     def _resolve_adapter(self, agent_type: AgentType) -> AgentAdapter:
@@ -37,7 +59,10 @@ class AgentShell():
         if not adapter_cls:
             raise ValueError(f"Unsupported agent: {agent_type}")
 
-        return adapter_cls()
+        return adapter_cls(
+            execution_host=self.execution_host,
+            isolation_policy=self.isolation_policy,
+        )
 
     async def execute(
             self,

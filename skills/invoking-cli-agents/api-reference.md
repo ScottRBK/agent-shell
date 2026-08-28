@@ -4,6 +4,7 @@
   `MCPServerSpec`, `HealthCheckResult`
 - [StreamEvent types](#event-types)
 - [AgentShell class](#agentshell-class) — invocation, model discovery, health, MCP management
+- [Execution hosts and isolation](#execution-hosts-and-isolation)
 - [AgentAdapter protocol](#agentadapter-protocol)
 - [Agent-specific notes](#agent-specific-notes)
 
@@ -58,6 +59,8 @@ class AgentExecutionError(Exception):
         session_id: str | None = None,
         duration: float = 0.0,
         output_tokens: int = 0,
+        returncode: int | None = None,  # raw process status; negative means signal
+        signal: int | None = None,      # positive signal number for signal termination
     ): ...
 ```
 
@@ -75,6 +78,8 @@ class StreamEvent:
     session_id: str | None = None  # On session-start and "result" events
     output_tokens: int = 0   # Cumulative generated tokens (on "result" events)
     error: str | None = None # Why a failing "result" failed, when recoverable (Pi)
+    returncode: int | None = None  # Set on process-level "error" events
+    signal: int | None = None      # Positive signal number when returncode is negative
 ```
 
 ### MCPServerSpec
@@ -124,7 +129,8 @@ Canonical event types emitted by `stream()`:
 
 > A `result` event carries `cost`, `duration`, `output_tokens` and `session_id` on the agents
 > that report them. On a failing result, `error` holds the reason when the adapter recovered a
-> structured one (Pi); it is `None` otherwise.
+> structured one (Pi); it is `None` otherwise. A process-level `error` also carries
+> `returncode`; if a signal terminated it, `returncode` is negative and `signal` is positive.
 
 > Codex emits the session-start event as `type="session"` (not `"system"`). If you branch on
 > the session event across agents, match both.
@@ -140,7 +146,12 @@ Canonical event types emitted by `stream()`:
 from agent_shell.shell import AgentShell
 
 class AgentShell:
-    def __init__(self, agent_type: AgentType): ...
+    def __init__(
+        self,
+        agent_type: AgentType,
+        execution_host: ExecutionHost | None = None,      # default NativeExecutionHost()
+        isolation_policy: IsolationPolicy | None = None,  # default NoIsolation()
+    ): ...
     # raises ValueError for an AgentType with no registered adapter
 
     async def execute(
@@ -173,6 +184,38 @@ class AgentShell:
     async def remove_mcp_server(self, mcp_server_name: str) -> None: ...
     async def list_mcp_servers(self) -> list[MCPServerSpec]: ...
 ```
+
+## Execution Hosts and Isolation
+
+```python
+from agent_shell.execution import (
+    ExecutionHost,
+    IsolationPolicy,
+    IsolationUnavailableError,
+    LinuxPidNamespaceIsolation,
+    NativeExecutionHost,
+    NativeRunHandle,
+    NoIsolation,
+    PreparedLaunch,
+    RunHandle,
+)
+```
+
+`ExecutionHost` creates a `RunHandle` for one command. The handle exposes `pid`, `stdin`,
+`stdout`, `stderr`, `returncode`, `wait()`, `communicate()`, `cancel()`, and `release()`.
+`NativeExecutionHost` is currently the only concrete host. Agent adapters use handles internally;
+existing `execute()` and `stream()` callers do not need to manage them.
+
+`NoIsolation` preserves historical native execution. `LinuxPidNamespaceIsolation` uses rootless
+user + PID namespaces, with a tiny PID 1 reaper and the CLI at PID 2 or later. It protects
+AgentShell's ancestors from direct same-user signals sent inside the child namespace. It is not a
+filesystem, credential, network, tool, resource, or general security sandbox. Background
+descendants terminate when the namespace ends.
+
+The Linux policy requires `unshare` and supporting kernel configuration. An explicit request that
+cannot be satisfied raises `IsolationUnavailableError` before launching the CLI and never falls
+back to `NoIsolation`. The host/policy selection applies to `execute()`, `stream()`, and
+`health_check()`; model discovery and MCP configuration remain local management operations.
 
 ### Model discovery semantics
 

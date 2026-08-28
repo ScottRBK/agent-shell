@@ -10,6 +10,8 @@ and returning the output that can be used programatically as a unified contract
   behind a common adapter protocol.
 - **Execute or stream** — get one `AgentResponse` (raises `AgentExecutionError` on a failed run),
   or async-iterate normalized `StreamEvent`s with optional thinking/reasoning.
+- **Composable execution policy** — preserve native execution by default, or opt into Linux PID
+  namespace isolation without changing an agent adapter.
 - **Session resumption** — continue any conversation by passing back its `session_id`.
 - **Normalized cost & tokens** — consistent `cost` and `output_tokens` (reasoning included)
   regardless of how each CLI reports them.
@@ -70,6 +72,40 @@ separately.
 
 ## Examples
 
+### Execution host and isolation
+
+Existing callers remain unchanged. Omitting both settings means
+`NativeExecutionHost()` plus `NoIsolation()`:
+
+```python
+shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+```
+
+To protect the AgentShell owner from broad same-user cleanup commands such as `pkill -f`,
+explicitly request Linux PID namespace isolation:
+
+```python
+from agent_shell.execution import LinuxPidNamespaceIsolation
+
+shell = AgentShell(
+    agent_type=AgentType.CLAUDE_CODE,
+    isolation_policy=LinuxPidNamespaceIsolation(),
+)
+```
+
+The policy runs a tiny namespace init as PID 1 and the real CLI as PID 2 or later. Processes in
+that child namespace cannot see or signal AgentShell's ancestor processes. The feature requires
+Linux, the `unshare` command, and kernel support for unprivileged user/PID namespaces. If any are
+unavailable, launching raises `IsolationUnavailableError`; it never silently falls back.
+
+This is **direct-signal protection, not a sandbox**. It does not restrict files, credentials,
+network access, tools, or resource consumption. Any background descendants are also terminated
+when the isolated namespace ends. `execute()`, `stream()`, and `health_check()` use the selected
+host/policy; model discovery and MCP configuration remain local management operations.
+
+`NativeExecutionHost` is currently the only host implementation. Host and isolation are separate
+so future tmux/Herdr hosts can compose with policies without creating one class per combination.
+
 ### Execute
 
 ```python
@@ -108,7 +144,9 @@ follow_up = await shell.execute(
 `execute()` raises `AgentExecutionError` instead of returning when a run failed — an `error`
 event was emitted, the terminal `result` had `content == "error"`, or no terminal `result`
 arrived at all. `str(e)` is the bare reason; the exception also carries whatever partial
-`response`/`cost`/`session_id`/`duration`/`output_tokens` the run produced before failing.
+`response`/`cost`/`session_id`/`duration`/`output_tokens` the run produced before failing. When
+the CLI process itself exits unsuccessfully, `returncode` is also populated; signal termination
+uses Python's negative-returncode convention and supplies the positive signal number separately.
 
 ```python
 from agent_shell.models.agent import AgentExecutionError
@@ -117,6 +155,7 @@ try:
     response = await shell.execute(cwd="/path/to/project", prompt="Fix the failing test")
 except AgentExecutionError as e:
     print(f"run failed: {e}")   # e.g. "500 model name=qwen3.6-27b-8Q failed to load"
+    print(e.returncode, e.signal)  # e.g. -15, 15 for SIGTERM; otherwise None when unavailable
 ```
 
 ### Stream

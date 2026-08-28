@@ -19,6 +19,8 @@ def _fake_process(pid: int = 4242, returncode: int | None = None):
     process = MagicMock()
     process.pid = pid
     process.returncode = returncode
+    process.cancel = AsyncMock()
+    process.release = MagicMock()
     return process
 
 
@@ -101,71 +103,65 @@ class TestGroupedProcessCreation:
 
 
 class TestReleaseProcess:
-    def test_completed_stream_releases_instead_of_killing(self):
+    async def test_completed_stream_releases_instead_of_killing(self):
         # Arrange
         process = _fake_process(returncode=None)
         active = [process]
 
         # Act
-        with patch("agent_shell.process_cleanup.release_process_group") as release, \
-             patch("agent_shell.process_cleanup.kill_process_group") as kill:
-            release_process(
-                process,
-                active,
-                _fake_stderr_task(done=True),
-                child_exited=True,
-            )
+        await release_process(
+            process,
+            active,
+            _fake_stderr_task(done=True),
+            child_exited=True,
+        )
 
         # Assert
-        release.assert_called_once_with(process)
-        kill.assert_not_called()
+        process.release.assert_called_once_with()
+        process.cancel.assert_not_awaited()
         assert active == []
 
-    def test_abandoned_live_stream_kills_instead_of_awaiting(self):
+    async def test_abandoned_live_stream_cancels_through_its_run_handle(self):
         # Arrange
         process = _fake_process(returncode=None)
         active = [process]
 
         # Act
-        with patch("agent_shell.process_cleanup.release_process_group") as release, \
-             patch("agent_shell.process_cleanup.kill_process_group") as kill:
-            release_process(
-                process,
-                active,
-                _fake_stderr_task(done=True),
-                child_exited=False,
-            )
+        await release_process(
+            process,
+            active,
+            _fake_stderr_task(done=True),
+            child_exited=False,
+        )
 
         # Assert
-        kill.assert_called_once_with(process)
-        release.assert_not_called()
+        process.cancel.assert_awaited_once_with()
+        process.release.assert_not_called()
         assert active == []
 
-    def test_observed_returncode_is_positive_proof_the_child_exited(self):
+    async def test_observed_returncode_is_positive_proof_the_child_exited(self):
         # Arrange
         process = _fake_process(returncode=0)
 
         # Act
-        with patch("agent_shell.process_cleanup.release_process_group") as release, \
-             patch("agent_shell.process_cleanup.kill_process_group") as kill:
-            release_process(
-                process,
-                [process],
-                _fake_stderr_task(done=True),
-                child_exited=False,
-            )
+        await release_process(
+            process,
+            [process],
+            _fake_stderr_task(done=True),
+            child_exited=False,
+        )
 
         # Assert
-        release.assert_called_once_with(process)
-        kill.assert_not_called()
+        process.release.assert_called_once_with()
+        process.cancel.assert_not_awaited()
 
-    def test_child_exited_is_required(self):
+    async def test_child_exited_is_required(self):
         # Arrange
         process = _fake_process(returncode=0)
 
         # Act / Assert
         with pytest.raises(TypeError):
-            release_process(process, [process], _fake_stderr_task(done=True))
+            await release_process(process, [process], _fake_stderr_task(done=True))
 
     async def test_pending_stderr_task_is_cancelled(self):
         # Arrange
@@ -174,7 +170,7 @@ class TestReleaseProcess:
         await asyncio.sleep(0)
 
         # Act
-        release_process(process, [process], stderr_task, child_exited=True)
+        await release_process(process, [process], stderr_task, child_exited=True)
         await asyncio.sleep(0)
 
         # Assert

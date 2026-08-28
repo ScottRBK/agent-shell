@@ -6,7 +6,7 @@ description: >-
   restricting tools, or checking agent/model health. Supports Claude Code, OpenCode,
   Copilot CLI, Codex, Pi, Cursor, and Grok. Keywords: AgentShell, list_models, headless
   agent, model discovery, subprocess, allowed_tools, disallowed_tools, session_id, cost,
-  output_tokens.
+  output_tokens, execution host, PID namespace, isolation policy.
 ---
 
 # Invoking CLI Agents with AgentShell
@@ -44,7 +44,44 @@ uv add agent-shell-py
 
 AgentShell has two invocation methods — `execute()` collects a complete response, `stream()`
 yields events in real-time — plus helpers for model discovery, health checks, and MCP server
-management. All are async.
+management. All are async. Invocation has three independent choices:
+
+- `agent_type`: which CLI (Claude Code, Codex, etc.)
+- `execution_host`: where/how the process is owned (`NativeExecutionHost` today)
+- `isolation_policy`: what protection surrounds it (`NoIsolation` or Linux PID isolation)
+
+### Execution Host and Isolation Policy
+
+Existing code is backward-compatible: omitting both execution settings selects native execution
+with no isolation.
+
+```python
+shell = AgentShell(agent_type=AgentType.CODEX)
+# Equivalent to NativeExecutionHost() + NoIsolation()
+```
+
+Opt into direct-signal protection when an agent may run broad same-user cleanup commands such as
+`pkill -f`:
+
+```python
+from agent_shell.execution import LinuxPidNamespaceIsolation
+
+shell = AgentShell(
+    agent_type=AgentType.CODEX,
+    isolation_policy=LinuxPidNamespaceIsolation(),
+)
+```
+
+The Linux policy puts a tiny init/reaper at namespace PID 1 and the actual CLI at PID 2 or later.
+The CLI cannot see or signal AgentShell's ancestor processes. It requires Linux, `unshare`, and
+kernel support for unprivileged user/PID namespaces. An unavailable requested policy raises
+`IsolationUnavailableError` before the CLI starts; AgentShell never silently falls back.
+
+This policy is **not a sandbox**: filesystem, credentials, network, agent tools, and resource use
+remain available. Background descendants cannot outlive the isolated namespace. It applies to
+`execute()`, `stream()`, and `health_check()`; `list_models()` and MCP configuration are local
+management operations. `NativeExecutionHost` is the only shipped host today. Tmux and Herdr are
+future host possibilities, not current APIs.
 
 ### Discover Available Model Strings
 
@@ -117,6 +154,7 @@ async for event in shell.stream(
         print(event.content)
     elif event.type == "error":
         print(f"[error] {event.content}")
+        print(event.returncode, event.signal)  # populated for process-level failures
     elif event.type == "result":
         print(f"Done ({event.content}). Cost: ${event.cost:.4f}, {event.output_tokens} tok")
 ```
@@ -271,6 +309,7 @@ except AgentExecutionError as e:
     print(f"failed: {e}")               # str(e) == e.reason, the bare cause
     print(e.response)                   # text produced before the failure, if any
     print(e.cost, e.session_id, e.duration, e.output_tokens)
+    print(e.returncode, e.signal)       # -15 and 15 for SIGTERM; None if not process-derived
 else:
     print(response.response)
 ```
@@ -347,6 +386,7 @@ logging.getLogger("agent_shell").addHandler(logging.StreamHandler())
 | See agent thinking | `include_thinking=True` in `stream()` |
 | Check an agent/model works | `await shell.health_check(cwd, model=...)` |
 | Cancel a running agent | `KeyboardInterrupt` (handled automatically) |
+| Protect the owner from broad process kills | `isolation_policy=LinuxPidNamespaceIsolation()` |
 
 ## Common Mistakes
 
@@ -366,6 +406,8 @@ logging.getLogger("agent_shell").addHandler(logging.StreamHandler())
 | Not catching `AgentExecutionError` | `execute()` raises on a failed run — catch it |
 | Ignoring `UserWarning` on a deny | An unenforceable deny is warned, not applied — the tool is NOT blocked |
 | Ignoring `session_id` for multi-step work | Without it, each call starts fresh |
+| Treating PID isolation as a sandbox | It only blocks direct signalling of ancestors; separately restrict files, network, credentials, tools, and resources |
+| Assuming isolation silently degrades | Requested isolation raises `IsolationUnavailableError` when unavailable; catch it or fail the operation |
 
 ## API Reference
 

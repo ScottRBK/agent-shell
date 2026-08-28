@@ -7,9 +7,8 @@ Cheapest model per agent is used to keep spend minimal.
 
 import pytest
 
-from agent_shell.shell import AgentShell
 from agent_shell.models.agent import AgentType, HealthCheckResult
-
+from agent_shell.shell import AgentShell
 
 pytestmark = pytest.mark.e2e
 
@@ -21,7 +20,7 @@ VALID_MODEL = {
     AgentType.CODEX: "gpt-5.4-mini",
     AgentType.COPILOT_CLI: "auto",
     AgentType.PI: "openai-codex/gpt-5.4-mini",
-    AgentType.CURSOR: None,
+    AgentType.CURSOR: "auto",
     AgentType.GROK: "grok-4.5",
 }
 

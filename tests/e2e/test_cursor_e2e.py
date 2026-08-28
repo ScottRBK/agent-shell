@@ -1,14 +1,18 @@
 import pytest
 
+from agent_shell.models.agent import AgentResponse, AgentType, StreamEvent
 from agent_shell.shell import AgentShell
-from agent_shell.models.agent import AgentType, AgentResponse, StreamEvent
-
 
 pytestmark = pytest.mark.e2e
 
 
-# Cursor E2E uses the account's default model (on a Free plan that is Auto), so no model is
-# passed. These call the real cursor-agent binary and API; they are a local smoke test, not CI.
+# Cursor advertises named models that a Free plan cannot execute, and an omitted model can
+# inherit a previously selected named model. Pin Auto so the smoke test exercises an executable
+# model instead of depending on mutable account state.
+MODEL = "auto"
+
+
+# These call the real cursor-agent binary and API; they are a local smoke test, not CI.
 # Running in /tmp (an untrusted dir) also proves the mandatory --trust flag is accepted: without
 # it cursor-agent would exit 1 before emitting any events.
 
@@ -23,6 +27,7 @@ class TestStreamE2E:
         async for event in shell.stream(
             cwd="/tmp",
             prompt="Reply with exactly the word PONG and nothing else.",
+            model=MODEL,
         ):
             events.append(event)
 
@@ -46,6 +51,7 @@ class TestExecuteE2E:
         response = await shell.execute(
             cwd="/tmp",
             prompt="Reply with exactly the word PONG and nothing else.",
+            model=MODEL,
         )
 
         # Assert
@@ -66,6 +72,7 @@ class TestOutputTokensE2E:
         response = await shell.execute(
             cwd="/tmp",
             prompt="Write a short paragraph about the sea.",
+            model=MODEL,
         )
 
         # Assert
@@ -98,15 +105,18 @@ class TestSessionResumeE2E:
         first = await shell.execute(
             cwd="/tmp",
             prompt="Reply with just 'OK'.",
+            model=MODEL,
         )
         resumed = await shell.execute(
             cwd="/tmp",
             prompt="Reply with just 'OK'.",
+            model=MODEL,
             session_id=first.session_id,
         )
         fresh = await shell.execute(
             cwd="/tmp",
             prompt="Reply with just 'OK'.",
+            model=MODEL,
         )
 
         # Assert

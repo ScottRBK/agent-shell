@@ -1,5 +1,6 @@
-from enum import StrEnum
 from dataclasses import dataclass, field
+from enum import StrEnum
+
 
 class AgentType(StrEnum):
     CLAUDE_CODE = "claude_code"
@@ -33,6 +34,10 @@ class StreamEvent:
     # Why a failing result failed. `content` only says "error"; this carries the reason
     # when the adapter can recover one (pi puts it in agent_end and it was being dropped).
     error: str | None = None
+    # Raw process termination metadata. A signal exit follows Python's subprocess convention:
+    # returncode is negative and signal contains its positive signal number.
+    returncode: int | None = None
+    signal: int | None = None
 
 class AgentExecutionError(Exception):
     """Raised by `execute()` when the agent run did not succeed.
@@ -55,6 +60,8 @@ class AgentExecutionError(Exception):
             session_id: str | None = None,
             duration: float = 0.0,
             output_tokens: int = 0,
+            returncode: int | None = None,
+            signal: int | None = None,
     ):
         super().__init__(reason)
         self.reason = reason
@@ -63,6 +70,8 @@ class AgentExecutionError(Exception):
         self.session_id = session_id
         self.duration = duration
         self.output_tokens = output_tokens
+        self.returncode = returncode
+        self.signal = signal
 
 
 @dataclass

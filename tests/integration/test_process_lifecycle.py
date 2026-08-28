@@ -14,14 +14,7 @@ import time
 
 import pytest
 
-from agent_shell.models.agent import AgentType
 from agent_shell import process_cleanup
-from agent_shell.process_cleanup import (
-    cleanup_process_groups,
-    kill_process_group,
-)
-from agent_shell.shell import AgentShell
-
 from agent_shell.adapters.claude_code_adapter import ClaudeCodeAdapter
 from agent_shell.adapters.codex_adapter import CodexAdapter
 from agent_shell.adapters.copilot_cli_adapter import CopilotCLIAdapter
@@ -29,7 +22,17 @@ from agent_shell.adapters.cursor_adapter import CursorAdapter
 from agent_shell.adapters.grok_adapter import GrokAdapter
 from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
 from agent_shell.adapters.pi_adapter import PiAdapter
-
+from agent_shell.execution import (
+    IsolationUnavailableError,
+    LinuxPidNamespaceIsolation,
+    NativeExecutionHost,
+)
+from agent_shell.models.agent import AgentExecutionError, AgentType
+from agent_shell.process_cleanup import (
+    cleanup_process_groups,
+    kill_process_group,
+)
+from agent_shell.shell import AgentShell
 from tests.unit.adapter_matrix import ADAPTERS, OK_RESULT_EVENT
 
 # Adapter class to the public selector used by AgentShell.
@@ -73,6 +76,8 @@ CLI_NAME = {
 _FAKE_CLI = '''#!/usr/bin/env python3
 import json, os, subprocess, sys, time
 spec = json.loads(os.environ["AGENTSHELL_FAKE_CLI"])
+if spec.get("required_pid") is not None and os.getpid() != spec["required_pid"]:
+    sys.exit(88)
 if spec.get("grandchild_pid_file"):
     if spec.get("grandchild_lock_file"):
         argv = [sys.executable, "-c",
@@ -97,7 +102,9 @@ for output in spec.get("raw_stdout", []):
     sys.stdout.flush()
 if spec.get("hang"):
     time.sleep(60)
-sys.exit(0)
+if spec.get("terminate_signal"):
+    os.kill(os.getpid(), spec["terminate_signal"])
+sys.exit(spec.get("exit_code", 0))
 '''
 
 
@@ -422,6 +429,85 @@ async def test_completed_stream_leaves_nothing_registered(
     assert child.returncode is not None, "child was not reaped on the normal path"
     assert adapter._active_processes == []
     assert child not in process_cleanup._guardians
+
+
+@pytest.mark.parametrize("adapter_cls", ADAPTERS)
+@pytest.mark.parametrize(
+    ("termination", "expected_returncode", "expected_signal", "expected_reason"),
+    [
+        (
+            {"terminate_signal": signal.SIGTERM},
+            -signal.SIGTERM,
+            signal.SIGTERM,
+            "process terminated by signal SIGTERM (15)",
+        ),
+        (
+            {"exit_code": 23},
+            23,
+            None,
+            "process exited with code 23",
+        ),
+    ],
+    ids=["signal", "exit-code"],
+)
+async def test_process_termination_is_reported_structurally(
+        adapter_cls, termination, expected_returncode, expected_signal,
+        expected_reason, fake_cli, tmp_path):
+    # Arrange — the CLI emits a valid result and then terminates unsuccessfully without
+    # writing stderr. The process result must still overrule the success-shaped event.
+    shell = AgentShell(agent_type=AGENT_TYPE[adapter_cls])
+    fake_cli(stdout=[OK_RESULT_EVENT[adapter_cls]], **termination)
+
+    # Act
+    with pytest.raises(AgentExecutionError) as excinfo:
+        await shell.execute(cwd=str(tmp_path), prompt="ping")
+
+    # Assert
+    error = excinfo.value
+    assert str(error) == expected_reason
+    assert error.returncode == expected_returncode
+    assert error.signal == expected_signal
+
+
+async def test_stream_exposes_process_termination_metadata(fake_cli, tmp_path):
+    # Arrange
+    shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+    fake_cli(
+        stdout=[OK_RESULT_EVENT[ClaudeCodeAdapter]],
+        terminate_signal=signal.SIGTERM,
+    )
+
+    # Act
+    events = [
+        event
+        async for event in shell.stream(cwd=str(tmp_path), prompt="ping")
+    ]
+
+    # Assert
+    error = next(event for event in events if event.type == "error")
+    assert error.content == "process terminated by signal SIGTERM (15)"
+    assert error.returncode == -signal.SIGTERM
+    assert error.signal == signal.SIGTERM
+
+
+async def test_agentshell_applies_the_requested_pid_isolation(fake_cli, tmp_path):
+    # Arrange — the namespace init is PID 1, so the real CLI must be PID 2. This observable
+    # requirement fails if AgentShell merely stores the policy without wiring it to adapters.
+    shell = AgentShell(
+        agent_type=AgentType.CLAUDE_CODE,
+        execution_host=NativeExecutionHost(),
+        isolation_policy=LinuxPidNamespaceIsolation(),
+    )
+    fake_cli(stdout=[OK_RESULT_EVENT[ClaudeCodeAdapter]], required_pid=2)
+
+    # Act
+    try:
+        response = await shell.execute(cwd=str(tmp_path), prompt="ping")
+    except IsolationUnavailableError as error:
+        pytest.skip(str(error))
+
+    # Assert
+    assert response.response == ""
 
 
 @pytest.mark.parametrize("adapter_cls", ADAPTERS)

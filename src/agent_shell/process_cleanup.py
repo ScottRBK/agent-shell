@@ -19,7 +19,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
-
+from typing import Protocol
 
 logger = logging.getLogger("agent_shell.process_cleanup")
 
@@ -47,8 +47,23 @@ class _GroupGuardian:
         return self.process.pid
 
 
-# Process objects have stable identity even after their numeric PIDs are reaped and reused.
-_guardians: dict[asyncio.subprocess.Process, _GroupGuardian] = {}
+# Run handles have stable identity even after their numeric PIDs are reaped and reused.
+_guardians: dict[object, _GroupGuardian] = {}
+
+
+class _ManagedRun(Protocol):
+    @property
+    def returncode(self) -> int | None: ...
+
+    async def cancel(self) -> None: ...
+
+    def release(self) -> None: ...
+
+
+def transfer_process_guardian(process: object, run_handle: object) -> None:
+    """Move exact guardian ownership from a raw process to its public run handle."""
+    guardian = _guardians.pop(process)
+    _guardians[run_handle] = guardian
 
 
 def _send_guardian_command(guardian: _GroupGuardian, command: bytes) -> None:
@@ -94,19 +109,22 @@ async def create_grouped_process(
     *,
     env: dict[str, str] | None = None,
     stdin: int = asyncio.subprocess.DEVNULL,
+    pass_fds: tuple[int, ...] = (),
 ) -> asyncio.subprocess.Process:
     """Start a command in a process group owned by an exact guardian pipe."""
     guardian = _start_guardian()
     try:
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            stdin=stdin,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-            env=env,
-            process_group=guardian.pid,
-        )
+        spawn_options = {
+            "stdin": stdin,
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
+            "cwd": cwd,
+            "env": env,
+            "process_group": guardian.pid,
+        }
+        if pass_fds:
+            spawn_options["pass_fds"] = pass_fds
+        process = await asyncio.create_subprocess_exec(*command, **spawn_options)
     except BaseException:
         _send_guardian_command(guardian, _KILL_GROUP)
         raise
@@ -115,22 +133,22 @@ async def create_grouped_process(
     return process
 
 
-def release_process_group(process: asyncio.subprocess.Process) -> None:
+def release_process_group(process: object) -> None:
     """Stop the guardian without signalling leftovers from a completed CLI."""
     guardian = _guardians.pop(process, None)
     if guardian is not None:
         _send_guardian_command(guardian, _RELEASE_GROUP)
 
 
-def kill_process_group(process: asyncio.subprocess.Process) -> None:
+def kill_process_group(process: object) -> None:
     """Ask the process's exact guardian to SIGKILL its own group."""
     guardian = _guardians.pop(process, None)
     if guardian is not None:
         _send_guardian_command(guardian, _KILL_GROUP)
 
 
-def release_process(
-    process: asyncio.subprocess.Process,
+async def release_process(
+    process: _ManagedRun,
     active_processes: list,
     stderr_task,
     *,
@@ -140,13 +158,14 @@ def release_process(
     if not stderr_task.done():
         stderr_task.cancel()
 
-    if process in active_processes:
-        active_processes.remove(process)
+    if process not in active_processes:
+        return
+    active_processes.remove(process)
 
     if child_exited or process.returncode is not None:
-        release_process_group(process)
+        process.release()
     else:
-        kill_process_group(process)
+        await process.cancel()
 
 
 def cleanup_process_groups() -> None:

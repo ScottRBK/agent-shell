@@ -8,6 +8,18 @@ import warnings
 from pathlib import Path
 from typing import AsyncIterator
 
+from agent_shell.adapters.health import run_health_probe
+from agent_shell.adapters.model_discovery import decode_model_output, run_model_command
+from agent_shell.adapters.process_failure import process_failure_event
+from agent_shell.adapters.response import collect_response
+from agent_shell.adapters.stderr_format import format_stderr
+from agent_shell.adapters.tool_denial import resolve_disallowed_tools
+from agent_shell.execution import (
+    ExecutionHost,
+    IsolationPolicy,
+    NativeExecutionHost,
+    NoIsolation,
+)
 from agent_shell.models.agent import (
     AgentResponse,
     HealthCheckResult,
@@ -16,15 +28,8 @@ from agent_shell.models.agent import (
     StreamEvent,
 )
 from agent_shell.process_cleanup import (
-    create_grouped_process,
-    kill_process_group,
     release_process,
 )
-from agent_shell.adapters.health import run_health_probe
-from agent_shell.adapters.model_discovery import decode_model_output, run_model_command
-from agent_shell.adapters.response import collect_response
-from agent_shell.adapters.stderr_format import format_stderr
-from agent_shell.adapters.tool_denial import resolve_disallowed_tools
 
 logger = logging.getLogger("agent_shell.grok_adapter")
 
@@ -67,8 +72,18 @@ _DISALLOWED_TOOL_MAP = {
 
 
 class GrokAdapter:
-    def __init__(self):
+    def __init__(
+            self,
+            execution_host: ExecutionHost | None = None,
+            isolation_policy: IsolationPolicy | None = None,
+    ):
         self._active_processes = []
+        self._execution_host = (
+            execution_host if execution_host is not None else NativeExecutionHost()
+        )
+        self._isolation_policy = (
+            isolation_policy if isolation_policy is not None else NoIsolation()
+        )
 
     async def execute(
             self,
@@ -130,9 +145,10 @@ class GrokAdapter:
         logger.debug("Command: %s", cmd)
         logger.info("Process started (cwd=%s)", os.path.abspath(cwd))
 
-        process = await create_grouped_process(
+        process = await self._execution_host.launch(
             cmd,
             cwd=os.path.abspath(cwd),
+            isolation_policy=self._isolation_policy,
         )
 
         self._active_processes.append(process)
@@ -187,17 +203,15 @@ class GrokAdapter:
             child_exited = True
 
             stderr = await stderr_task
-            if stderr and process.returncode != 0:
-                error_msg = format_stderr(stderr)
-                logger.warning(
-                    "Process exited with code %d: %s", process.returncode, error_msg,
-                )
-                yield StreamEvent(type="error", content=error_msg)
+            failure = process_failure_event(process.returncode, stderr)
+            if failure is not None:
+                logger.warning("Process failed (%d): %s", process.returncode, failure.content)
+                yield failure
         finally:
             # Teardown must live here, not after the read loop: on an exception, or when the
             # consumer abandons the stream, the normal path never runs and the still-running
             # child and its registry entry leaked (issue #7).
-            release_process(
+            await release_process(
                 process, self._active_processes, stderr_task, child_exited=child_exited,
             )
 
@@ -299,9 +313,10 @@ class GrokAdapter:
         return events
 
     async def cancel(self) -> None:
-        for process in self._active_processes:
-            kill_process_group(process)
+        processes = list(self._active_processes)
         self._active_processes.clear()
+        for process in processes:
+            await process.cancel()
 
     async def health_check(
             self,

@@ -1,15 +1,42 @@
 import pytest
 
 from agent_shell import shell as shell_module
-from agent_shell.shell import AgentShell
-from agent_shell.models.agent import AgentType, AgentResponse
 from agent_shell.adapters.claude_code_adapter import ClaudeCodeAdapter
-from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
-from agent_shell.adapters.copilot_cli_adapter import CopilotCLIAdapter
 from agent_shell.adapters.codex_adapter import CodexAdapter
-from agent_shell.adapters.pi_adapter import PiAdapter
+from agent_shell.adapters.copilot_cli_adapter import CopilotCLIAdapter
 from agent_shell.adapters.cursor_adapter import CursorAdapter
 from agent_shell.adapters.grok_adapter import GrokAdapter
+from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
+from agent_shell.adapters.pi_adapter import PiAdapter
+from agent_shell.execution import NativeExecutionHost, NoIsolation
+from agent_shell.models.agent import AgentResponse, AgentType
+from agent_shell.shell import AgentShell
+
+
+class TestExecutionDefaults:
+    def test_existing_constructor_defaults_to_native_without_isolation(self):
+        # Arrange / Act
+        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+
+        # Assert
+        assert isinstance(shell.execution_host, NativeExecutionHost)
+        assert isinstance(shell.isolation_policy, NoIsolation)
+
+    def test_explicit_execution_choices_are_retained(self):
+        # Arrange
+        host = NativeExecutionHost()
+        policy = NoIsolation()
+
+        # Act
+        shell = AgentShell(
+            agent_type=AgentType.CLAUDE_CODE,
+            execution_host=host,
+            isolation_policy=policy,
+        )
+
+        # Assert
+        assert shell.execution_host is host
+        assert shell.isolation_policy is policy
 
 
 class TestResolveAdapter:
