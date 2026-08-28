@@ -510,6 +510,27 @@ async def test_agentshell_applies_the_requested_pid_isolation(fake_cli, tmp_path
     assert response.response == ""
 
 
+async def test_agentshell_applies_pid_isolation_selected_by_environment(
+        fake_cli, tmp_path, monkeypatch):
+    # Arrange — exercise the deployment-level configuration through the public AgentShell
+    # boundary. Namespace PID 2 proves the selected policy reached the real CLI process.
+    monkeypatch.setenv(
+        "AGENTSHELL_ISOLATION_POLICY",
+        "linux-pid-namespace",
+    )
+    shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+    fake_cli(stdout=[OK_RESULT_EVENT[ClaudeCodeAdapter]], required_pid=2)
+
+    # Act
+    try:
+        response = await shell.execute(cwd=str(tmp_path), prompt="ping")
+    except IsolationUnavailableError as error:
+        pytest.skip(str(error))
+
+    # Assert
+    assert response.response == ""
+
+
 @pytest.mark.parametrize("adapter_cls", ADAPTERS)
 async def test_cancelled_agent_shell_stream_kills_the_real_process_tree(
         adapter_cls, fake_cli, tmp_path):

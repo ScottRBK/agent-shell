@@ -52,13 +52,23 @@ management. All are async. Invocation has three independent choices:
 
 ### Execution Host and Isolation Policy
 
-Existing code is backward-compatible: omitting both execution settings selects native execution
-with no isolation.
+Existing code is backward-compatible: when `AGENTSHELL_ISOLATION_POLICY` is unset, omitting both
+execution settings selects native execution with no isolation.
 
 ```python
 shell = AgentShell(agent_type=AgentType.CODEX)
 # Equivalent to NativeExecutionHost() + NoIsolation()
 ```
+
+For a process-wide deployment default, set the environment before constructing a shell:
+
+```bash
+export AGENTSHELL_ISOLATION_POLICY=linux-pid-namespace
+```
+
+Accepted values are `none` and `linux-pid-namespace`. Empty or unknown values raise `ValueError`.
+An explicit `isolation_policy=` object wins over the environment, which remains the way to select
+a custom policy or override the deployment default for one shell.
 
 Opt into direct-signal protection when an agent may run broad same-user cleanup commands such as
 `pkill -f`:

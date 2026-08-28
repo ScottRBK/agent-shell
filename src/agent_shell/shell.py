@@ -1,4 +1,5 @@
 import asyncio
+import os
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -13,6 +14,7 @@ from agent_shell.adapters.pi_adapter import PiAdapter
 from agent_shell.execution import (
     ExecutionHost,
     IsolationPolicy,
+    LinuxPidNamespaceIsolation,
     NativeExecutionHost,
     NoIsolation,
 )
@@ -37,6 +39,22 @@ _ADAPTERS: dict[AgentType, type[AgentAdapter]] = {
         AgentType.GROK: GrokAdapter,
 }
 
+_ISOLATION_POLICY_ENV = "AGENTSHELL_ISOLATION_POLICY"
+
+
+def _isolation_policy_from_environment() -> IsolationPolicy:
+    value = os.environ.get(_ISOLATION_POLICY_ENV)
+    if value is None:
+        return NoIsolation()
+    if value == "none":
+        return NoIsolation()
+    if value == "linux-pid-namespace":
+        return LinuxPidNamespaceIsolation()
+    raise ValueError(
+        f"Unsupported {_ISOLATION_POLICY_ENV} value {value!r}: "
+        "expected 'none' or 'linux-pid-namespace'"
+    )
+
 
 class AgentShell():
     def __init__(
@@ -49,7 +67,9 @@ class AgentShell():
             execution_host if execution_host is not None else NativeExecutionHost()
         )
         self.isolation_policy = (
-            isolation_policy if isolation_policy is not None else NoIsolation()
+            isolation_policy
+            if isolation_policy is not None
+            else _isolation_policy_from_environment()
         )
         self._adapter = self._resolve_adapter(agent_type=agent_type)
 

@@ -158,12 +158,14 @@ classDiagram
 The adapter pattern uses Python's `Protocol` (structural typing) rather than ABC, so adapters satisfy the contract implicitly without inheritance. Each adapter translates agent-specific CLI flags and NDJSON output into the shared `StreamEvent`/`AgentResponse` models, while the selected `ExecutionHost` owns process creation and returns a per-run `RunHandle`.
 
 Execution location and protection are separate axes. Existing callers default to
-`NativeExecutionHost()` plus `NoIsolation()`. `LinuxPidNamespaceIsolation` is an opt-in direct
-signal boundary: a tiny init/reaper is PID 1 and the CLI is PID 2 or later, so child-namespace
-processes cannot see or signal AgentShell's ancestors. It requires Linux, `unshare`, and enabled
-unprivileged user/PID namespaces; an unavailable explicit request raises
-`IsolationUnavailableError` and never falls back. This is not a general sandbox and does not
-restrict filesystem, credentials, network, tools, or resources. The host/policy applies to
+`NativeExecutionHost()` plus `NoIsolation()` when `AGENTSHELL_ISOLATION_POLICY` is unset. The
+environment accepts `none` or `linux-pid-namespace` as a process-wide construction default;
+explicit `isolation_policy=` takes precedence, and invalid or empty values raise `ValueError`.
+`LinuxPidNamespaceIsolation` is a direct signal boundary: a tiny init/reaper is PID 1 and the CLI
+is PID 2 or later, so child-namespace processes cannot see or signal AgentShell's ancestors. It
+requires Linux, `unshare`, and enabled unprivileged user/PID namespaces; an unavailable request
+raises `IsolationUnavailableError` and never falls back. This is not a general sandbox and does
+not restrict filesystem, credentials, network, tools, or resources. The host/policy applies to
 `execute()`, `stream()`, and `health_check()`; model discovery and MCP configuration remain local.
 
 `output_tokens` is a cost measure — the billed output-token count, which **includes reasoning tokens** (billed at the output rate). Each adapter normalises this so the value is consistent across agents (e.g. OpenCode reports reasoning in a sibling field, so its adapter adds it back).

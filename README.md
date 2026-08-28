@@ -74,12 +74,23 @@ separately.
 
 ### Execution host and isolation
 
-Existing callers remain unchanged. Omitting both settings means
-`NativeExecutionHost()` plus `NoIsolation()`:
+Existing callers remain unchanged when `AGENTSHELL_ISOLATION_POLICY` is unset. Omitting both
+constructor settings then means `NativeExecutionHost()` plus `NoIsolation()`:
 
 ```python
 shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
 ```
+
+Set a process-wide deployment default without changing Python call sites:
+
+```bash
+export AGENTSHELL_ISOLATION_POLICY=linux-pid-namespace
+```
+
+The accepted values are `none` and `linux-pid-namespace`. AgentShell reads the value when each
+shell is constructed. An empty or unknown value raises `ValueError` rather than silently disabling
+isolation. An explicit constructor policy takes precedence over the environment, so a caller can
+still force one shell to use `NoIsolation()` or a custom policy.
 
 To protect the AgentShell owner from broad same-user cleanup commands such as `pkill -f`,
 explicitly request Linux PID namespace isolation:

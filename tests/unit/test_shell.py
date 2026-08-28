@@ -8,12 +8,52 @@ from agent_shell.adapters.cursor_adapter import CursorAdapter
 from agent_shell.adapters.grok_adapter import GrokAdapter
 from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
 from agent_shell.adapters.pi_adapter import PiAdapter
-from agent_shell.execution import NativeExecutionHost, NoIsolation
+from agent_shell.execution import (
+    LinuxPidNamespaceIsolation,
+    NativeExecutionHost,
+    NoIsolation,
+)
 from agent_shell.models.agent import AgentResponse, AgentType
 from agent_shell.shell import AgentShell
 
 
 class TestExecutionDefaults:
+    def test_environment_can_select_linux_pid_namespace_isolation(self, monkeypatch):
+        # Arrange
+        monkeypatch.setenv(
+            "AGENTSHELL_ISOLATION_POLICY",
+            "linux-pid-namespace",
+        )
+
+        # Act
+        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+
+        # Assert
+        assert isinstance(shell.isolation_policy, LinuxPidNamespaceIsolation)
+
+    @pytest.mark.parametrize("value", ["", "container"])
+    def test_invalid_environment_is_rejected_instead_of_disabling_isolation(
+            self, monkeypatch, value):
+        # Arrange
+        monkeypatch.setenv("AGENTSHELL_ISOLATION_POLICY", value)
+
+        # Act / Assert
+        with pytest.raises(
+            ValueError,
+            match="AGENTSHELL_ISOLATION_POLICY",
+        ):
+            AgentShell(agent_type=AgentType.CLAUDE_CODE)
+
+    def test_environment_can_explicitly_select_no_isolation(self, monkeypatch):
+        # Arrange
+        monkeypatch.setenv("AGENTSHELL_ISOLATION_POLICY", "none")
+
+        # Act
+        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
+
+        # Assert
+        assert isinstance(shell.isolation_policy, NoIsolation)
+
     def test_existing_constructor_defaults_to_native_without_isolation(self):
         # Arrange / Act
         shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
@@ -36,6 +76,23 @@ class TestExecutionDefaults:
 
         # Assert
         assert shell.execution_host is host
+        assert shell.isolation_policy is policy
+
+    def test_explicit_isolation_policy_overrides_environment(self, monkeypatch):
+        # Arrange
+        monkeypatch.setenv(
+            "AGENTSHELL_ISOLATION_POLICY",
+            "linux-pid-namespace",
+        )
+        policy = NoIsolation()
+
+        # Act
+        shell = AgentShell(
+            agent_type=AgentType.CLAUDE_CODE,
+            isolation_policy=policy,
+        )
+
+        # Assert
         assert shell.isolation_policy is policy
 
 

@@ -150,7 +150,7 @@ class AgentShell:
         self,
         agent_type: AgentType,
         execution_host: ExecutionHost | None = None,      # default NativeExecutionHost()
-        isolation_policy: IsolationPolicy | None = None,  # default NoIsolation()
+        isolation_policy: IsolationPolicy | None = None,  # env setting, then NoIsolation()
     ): ...
     # raises ValueError for an AgentType with no registered adapter
 
@@ -211,6 +211,11 @@ user + PID namespaces, with a tiny PID 1 reaper and the CLI at PID 2 or later. I
 AgentShell's ancestors from direct same-user signals sent inside the child namespace. It is not a
 filesystem, credential, network, tool, resource, or general security sandbox. Background
 descendants terminate when the namespace ends.
+
+When `isolation_policy` is omitted, `AgentShell` reads `AGENTSHELL_ISOLATION_POLICY` at
+construction. The accepted values are `none` and `linux-pid-namespace`; if the variable is absent,
+the default remains `NoIsolation`. Empty or unknown values raise `ValueError`. Passing an explicit
+policy object takes precedence over the environment.
 
 The Linux policy requires `unshare` and supporting kernel configuration. An explicit request that
 cannot be satisfied raises `IsolationUnavailableError` before launching the CLI and never falls
