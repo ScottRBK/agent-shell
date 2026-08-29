@@ -339,3 +339,24 @@ class NativeExecutionHost:
         )
         transfer_process_guardian(process, run_handle)
         return run_handle
+
+
+_TERMINAL_WINDOW_COMPAT_EXPORTS = frozenset(
+    {
+        "SubprocessTerminalLauncher",
+        "TerminalWindowExecutionHost",
+        "TerminalWindowLauncher",
+        "TerminalWindowRunHandle",
+        "TerminalWindowUnavailableError",
+        "discover_terminal_launcher",
+    }
+)
+
+
+def __getattr__(name: str):
+    """Lazily preserve the pre-module-split terminal-window import path."""
+    if name in _TERMINAL_WINDOW_COMPAT_EXPORTS:
+        from agent_shell import terminal_window
+
+        return getattr(terminal_window, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
