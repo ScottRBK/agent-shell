@@ -182,6 +182,44 @@ unidentifiable windows fail closed without falling back to a new session. If tmu
 `TmuxUnavailableError` is raised and AgentShell does not silently fall back to the native host.
 Model discovery and MCP configuration remain local management operations.
 
+#### Terminal-window execution host
+
+To watch a headless run in a new local graphical terminal window, inject the host into
+`AgentShell`:
+
+```python
+from agent_shell import TerminalWindowExecutionHost
+from agent_shell.shell import AgentShell
+from agent_shell.models.agent import AgentType
+
+shell = AgentShell(
+    agent_type=AgentType.CLAUDE_CODE,
+    execution_host=TerminalWindowExecutionHost(),
+)
+```
+
+The host is Linux-focused in v1 and needs an installed terminal emulator plus a usable X11 or
+Wayland session. It discovers `x-terminal-emulator`, `gnome-terminal`, `konsole`, `kitty`,
+`alacritty`, `foot`, `wezterm`, or `xterm` in that order. These are optional external
+prerequisites; AgentShell has no terminal-emulator or Python runtime dependency. A caller can
+inject a `TerminalWindowLauncher` strategy (for example, `SubprocessTerminalLauncher`) for a
+different emulator or platform. If no launcher or graphical session is available, the request
+raises `TerminalWindowUnavailableError` and does not fall back to native execution.
+For a simple local override, set `AGENTSHELL_TERMINAL_LAUNCHER` to an executable name or path;
+strategies are preferred when custom argument conventions are needed.
+
+Each run opens a one-shot worker. The worker receives the command, environment, and prompt-bearing
+CLI arguments over a private mode-0700 directory and Unix socket; only the non-secret socket path
+is passed to the terminal launcher. Raw stdout and stderr bytes are forwarded unchanged to
+AgentShell and mirrored to the visible terminal. `RunHandle.pid` is the worker PID, and the
+target command's exact exit or signal status is returned.
+
+Only `NoIsolation` and `DEVNULL`/`PIPE` stdin are supported in v1. Other isolation policies and
+arbitrary file descriptors are rejected before launch. Runs are headless and machine-controlled
+despite being visible. Completed windows and transport resources close by default; there is no
+hold-open option in v1. Cancellation is sent through the private socket, and abandoning the
+owner cleans the worker, socket, and temporary directory where interpreter shutdown permits.
+
 Execution host and isolation policy remain separate axes, avoiding one host class per host/policy
 combination. Optional hosts fail closed when a requested isolation policy cannot be transported.
 

@@ -341,6 +341,18 @@ class NativeExecutionHost:
         return run_handle
 
 
+_TERMINAL_WINDOW_COMPAT_EXPORTS = frozenset(
+    {
+        "SubprocessTerminalLauncher",
+        "TerminalWindowExecutionHost",
+        "TerminalWindowLauncher",
+        "TerminalWindowRunHandle",
+        "TerminalWindowUnavailableError",
+        "discover_terminal_launcher",
+    }
+)
+
+
 def __getattr__(name: str):
     """Lazily expose optional execution-host symbols without module cycles."""
     if name in {
@@ -356,4 +368,8 @@ def __getattr__(name: str):
         from agent_shell import tmux
 
         return getattr(tmux, name)
+    if name in _TERMINAL_WINDOW_COMPAT_EXPORTS:
+        from agent_shell import terminal_window
+
+        return getattr(terminal_window, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

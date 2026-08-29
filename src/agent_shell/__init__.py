@@ -6,6 +6,14 @@ from agent_shell.herdr import (
     HerdrPane,
     HerdrUnavailableError,
 )
+from agent_shell.terminal_window import (
+    SubprocessTerminalLauncher,
+    TerminalWindowExecutionHost,
+    TerminalWindowLauncher,
+    TerminalWindowRunHandle,
+    TerminalWindowUnavailableError,
+    discover_terminal_launcher,
+)
 from agent_shell.tmux import TmuxExecutionHost, TmuxPlacement, TmuxUnavailableError
 
 __all__ = [
@@ -13,7 +21,13 @@ __all__ = [
     "HerdrExecutionHost",
     "HerdrPane",
     "HerdrUnavailableError",
+    "SubprocessTerminalLauncher",
+    "TerminalWindowExecutionHost",
+    "TerminalWindowLauncher",
+    "TerminalWindowRunHandle",
+    "TerminalWindowUnavailableError",
     "TmuxExecutionHost",
     "TmuxPlacement",
     "TmuxUnavailableError",
+    "discover_terminal_launcher",
 ]
