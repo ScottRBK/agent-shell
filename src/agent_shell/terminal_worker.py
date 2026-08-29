@@ -13,18 +13,17 @@ import os
 import struct
 import sys
 
-from agent_shell.execution import NoIsolation, NativeExecutionHost
+from agent_shell.execution import NativeExecutionHost, NoIsolation
 from agent_shell.terminal_protocol import (
     _TERMINAL_CANCEL,
     _TERMINAL_ERROR,
-    _TERMINAL_FRAME_HEADER,
     _TERMINAL_HELLO,
     _TERMINAL_REQUEST,
     _TERMINAL_STATUS,
     _TERMINAL_STDERR,
-    _TERMINAL_STDOUT,
     _TERMINAL_STDIN,
     _TERMINAL_STDIN_EOF,
+    _TERMINAL_STDOUT,
     _read_terminal_frame,
     _write_terminal_frame,
 )
@@ -151,7 +150,7 @@ async def _run(
                    if stdin_mode == "pipe" else asyncio.subprocess.DEVNULL),
             isolation_policy=NoIsolation(),
         )
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - report every launch failure over IPC
         await _send_error(
             writer,
             f"terminal worker could not start command: {error}",

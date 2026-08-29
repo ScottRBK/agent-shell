@@ -3,7 +3,6 @@
 import asyncio
 import struct
 
-
 # The worker and owner exchange length-prefixed frames. The kind byte stays separate from
 # payload bytes so stdout/stderr and stdin remain byte-preserving rather than text protocols.
 _TERMINAL_FRAME_HEADER = struct.Struct("!I")

@@ -13,8 +13,9 @@ import shutil
 import struct
 import sys
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Protocol, Sequence
+from typing import Protocol
 
 from agent_shell.execution import (
     IsolationPolicy,
@@ -30,9 +31,9 @@ from agent_shell.terminal_protocol import (
     _TERMINAL_REQUEST,
     _TERMINAL_STATUS,
     _TERMINAL_STDERR,
-    _TERMINAL_STDOUT,
     _TERMINAL_STDIN,
     _TERMINAL_STDIN_EOF,
+    _TERMINAL_STDOUT,
     _read_terminal_frame,
     _write_terminal_frame,
 )
@@ -405,9 +406,9 @@ class TerminalWindowRunHandle:
         try:
             await asyncio.wait_for(wait(), timeout=0.5)
             return
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             pass
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - external launcher wait is best effort
             # A broken wait implementation must not prevent an exact launcher shutdown
             # attempt; the worker status has already established the target's result.
             pass
@@ -417,12 +418,12 @@ class TerminalWindowRunHandle:
                 process.terminate()
             try:
                 await asyncio.wait_for(wait(), timeout=0.5)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 with contextlib.suppress(Exception):
                     process.kill()
                 with contextlib.suppress(Exception):
                     await wait()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - external launcher wait is best effort
                 pass
 
     async def _cleanup(self) -> None:
@@ -508,7 +509,7 @@ class TerminalWindowExecutionHost:
         if not all(isinstance(value, str) for value in command):
             raise ValueError("command must contain only strings")
         if not isinstance(cwd, str):
-            raise ValueError("cwd must be a string")
+            raise ValueError("cwd must be a string")  # noqa: TRY004 - API validation contract
         if stdin not in (asyncio.subprocess.DEVNULL, asyncio.subprocess.PIPE):
             raise ValueError(
                 "TerminalWindowExecutionHost supports only DEVNULL or PIPE stdin"
@@ -632,7 +633,7 @@ class TerminalWindowExecutionHost:
                     _read_terminal_frame(reader),
                     timeout=self.startup_timeout,
                 )
-            except (asyncio.TimeoutError, asyncio.IncompleteReadError, ValueError) as error:
+            except (TimeoutError, asyncio.IncompleteReadError, ValueError) as error:
                 raise TerminalWindowUnavailableError(
                     f"terminal worker did not complete its startup handshake: {error}"
                 ) from error
@@ -697,7 +698,7 @@ class TerminalWindowExecutionHost:
                         launcher_process.terminate()
                         try:
                             await asyncio.wait_for(launcher_process.wait(), timeout=0.5)
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             with contextlib.suppress(Exception):
                                 launcher_process.kill()
                             with contextlib.suppress(Exception):

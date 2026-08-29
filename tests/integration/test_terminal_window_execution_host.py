@@ -167,10 +167,12 @@ async def test_terminal_host_transports_run_data_without_exposing_it_to_launcher
     command = [
         sys.executable,
         "-c",
-        "import os, sys; "
-        "sys.stdout.buffer.write(os.environ['AGENTSHELL_TEST_SECRET'].encode() + "
-        "b'\\x00\\xff\\n'); "
-        "sys.stderr.buffer.write(b'visible-error\\x00\\xfe\\n')",
+        (
+            "import os, sys; "
+            "sys.stdout.buffer.write(os.environ['AGENTSHELL_TEST_SECRET'].encode() + "
+            "b'\\x00\\xff\\n'); "
+            "sys.stderr.buffer.write(b'visible-error\\x00\\xfe\\n')"
+        ),
         command_secret,
     ]
     run_env = dict(os.environ, AGENTSHELL_TEST_SECRET=secret)
@@ -440,7 +442,7 @@ async def test_agentshell_stream_stays_lossless_when_the_visible_terminal_stalls
     stream_task = asyncio.create_task(collect_events())
     try:
         events = await asyncio.wait_for(asyncio.shield(stream_task), timeout=3.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         # The cleanup below keeps the intentionally failing red run from orphaning the
         # worker while retaining the timeout as the test failure.
         if launcher.process is not None and launcher.process.returncode is None:
@@ -661,7 +663,7 @@ async def test_terminal_host_can_cancel_after_target_closes_its_output_streams(t
     # Act / Assert
     try:
         await asyncio.wait_for(run.cancel(), timeout=3.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         launcher.process.kill()
         await asyncio.wait_for(run.wait(), timeout=3.0)
         pytest.fail("worker stopped listening for cancellation when output reached EOF")
@@ -766,8 +768,10 @@ async def test_terminal_host_mirrors_each_byte_stream_to_the_visible_worker_term
     command = [
         sys.executable,
         "-c",
-        "import sys; sys.stdout.buffer.write(b'out\\x00\\xff\\n'); "
-        "sys.stderr.buffer.write(b'err\\x01\\xfe\\n')",
+        (
+            "import sys; sys.stdout.buffer.write(b'out\\x00\\xff\\n'); "
+            "sys.stderr.buffer.write(b'err\\x01\\xfe\\n')"
+        ),
     ]
 
     # Act
