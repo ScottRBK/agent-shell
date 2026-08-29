@@ -339,3 +339,17 @@ class NativeExecutionHost:
         )
         transfer_process_guardian(process, run_handle)
         return run_handle
+
+
+def __getattr__(name: str):
+    """Lazily expose Herdr symbols without introducing an execution-module cycle."""
+    if name in {
+        "HerdrClient",
+        "HerdrExecutionHost",
+        "HerdrPane",
+        "HerdrUnavailableError",
+    }:
+        from agent_shell import herdr
+
+        return getattr(herdr, name)
+    raise AttributeError(name)

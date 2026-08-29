@@ -114,8 +114,35 @@ network access, tools, or resource consumption. Any background descendants are a
 when the isolated namespace ends. `execute()`, `stream()`, and `health_check()` use the selected
 host/policy; model discovery and MCP configuration remain local management operations.
 
-`NativeExecutionHost` is currently the only host implementation. Host and isolation are separate
-so future tmux/Herdr hosts can compose with policies without creating one class per combination.
+`NativeExecutionHost` remains the default. An opt-in `HerdrExecutionHost` runs each command in a
+uniquely owned Herdr pane while preserving the same adapter API:
+
+```python
+from agent_shell import HerdrExecutionHost
+
+shell = AgentShell(
+    agent_type=AgentType.CLAUDE_CODE,
+    execution_host=HerdrExecutionHost(),
+)
+```
+
+The `herdr` executable is an optional external prerequisite; AgentShell does not install a Python
+Herdr client or silently fall back to native execution. Herdr host v1 supports `NoIsolation()`
+only, and supports `DEVNULL` or `PIPE` stdin. A private, standard-library bridge carries the
+command, environment, output, status, and cancellation between the host and the Herdr worker, so
+secrets are not placed in the worker's launcher arguments. `RunHandle.pid` identifies the bridge
+worker, while the target CLI's normal or signal return status is preserved. Every run cleans up
+only its own Herdr pane, workspace, and bridge directory. Cleanup is bounded (five seconds by
+default; configure `cleanup_timeout=` when constructing the host). Model discovery and MCP
+configuration are local management operations and do not create Herdr panes.
+
+On Linux, both the bridge worker and its target use a parent-death guard, so an abrupt Herdr pane
+or worker exit cannot leave the target running. Other Unix platforms use the normal bridge
+disconnect cleanup but do not provide this kernel-level guard; an abrupt worker or pane death may
+therefore require external cleanup.
+
+Host and isolation are separate so future tmux/Herdr hosts can compose with policies without
+creating one class per combination.
 
 ### Execute
 

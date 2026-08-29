@@ -14,6 +14,7 @@ and cleanup accepts a possible leak rather than risking a signal to a recycled p
 import asyncio
 import atexit
 import contextlib
+import inspect
 import logging
 import os
 import subprocess
@@ -164,6 +165,11 @@ async def release_process(
 
     if child_exited or process.returncode is not None:
         process.release()
+        wait_release = getattr(process, "wait_release", None)
+        if wait_release is not None:
+            result = wait_release()
+            if inspect.isawaitable(result):
+                await result
     else:
         await process.cancel()
 
