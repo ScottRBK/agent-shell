@@ -342,7 +342,7 @@ class NativeExecutionHost:
 
 
 def __getattr__(name: str):
-    """Lazily expose Herdr symbols without introducing an execution-module cycle."""
+    """Lazily expose optional execution-host symbols without module cycles."""
     if name in {
         "HerdrClient",
         "HerdrExecutionHost",
@@ -352,4 +352,8 @@ def __getattr__(name: str):
         from agent_shell import herdr
 
         return getattr(herdr, name)
-    raise AttributeError(name)
+    if name in {"TmuxExecutionHost", "TmuxPlacement", "TmuxUnavailableError"}:
+        from agent_shell import tmux
+
+        return getattr(tmux, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

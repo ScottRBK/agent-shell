@@ -6,10 +6,14 @@ from agent_shell.herdr import (
     HerdrPane,
     HerdrUnavailableError,
 )
+from agent_shell.tmux import TmuxExecutionHost, TmuxPlacement, TmuxUnavailableError
 
 __all__ = [
     "HerdrClient",
     "HerdrExecutionHost",
     "HerdrPane",
     "HerdrUnavailableError",
+    "TmuxExecutionHost",
+    "TmuxPlacement",
+    "TmuxUnavailableError",
 ]

@@ -114,7 +114,12 @@ network access, tools, or resource consumption. Any background descendants are a
 when the isolated namespace ends. `execute()`, `stream()`, and `health_check()` use the selected
 host/policy; model discovery and MCP configuration remain local management operations.
 
-`NativeExecutionHost` remains the default. An opt-in `HerdrExecutionHost` runs each command in a
+`NativeExecutionHost` remains the default. Execution hosts are opt-in and do not add Python
+dependencies.
+
+#### Herdr execution host
+
+An opt-in `HerdrExecutionHost` runs each command in a
 uniquely owned Herdr pane while preserving the same adapter API:
 
 ```python
@@ -141,8 +146,44 @@ or worker exit cannot leave the target running. Other Unix platforms use the nor
 disconnect cleanup but do not provide this kernel-level guard; an abrupt worker or pane death may
 therefore require external cleanup.
 
-Host and isolation are separate so future tmux/Herdr hosts can compose with policies without
-creating one class per combination.
+#### tmux execution host
+
+For a visible tmux run, opt into `TmuxExecutionHost` (the `tmux` executable itself is an optional
+system prerequisite):
+
+```python
+from agent_shell import TmuxExecutionHost, TmuxPlacement
+
+shell = AgentShell(
+    agent_type=AgentType.CLAUDE_CODE,
+    execution_host=TmuxExecutionHost(),
+)
+```
+
+By default, each run creates and owns one uniquely named tmux session and pane. Placement can be
+chosen explicitly: `TmuxPlacement.new_session(name=None)` creates an owned session, while
+`TmuxPlacement.new_window(session, focus=False)` borrows an existing session and owns only the
+new window. `TmuxPlacement.current_session(focus=False)` is a convenience for creating a window
+in the current tmux session and fails clearly when called outside tmux. `focus` defaults to false,
+so creating a window does not change the user's active window.
+
+A private, one-shot stdlib bridge keeps stdout and stderr as separate raw streams for the adapter
+while mirroring output into the pane; the command, working directory, environment, and prompt are
+sent over the private Unix socket, so secrets are not placed in the tmux command line.
+`RunHandle.pid` identifies the bridge/worker that owns the lifecycle, while `returncode` is the
+target CLI's exact exit or signal status.
+
+Version 1 supports `NoIsolation` and `DEVNULL` or `PIPE` stdin only. Unsupported isolation
+policies and arbitrary file descriptors fail closed before a tmux session is created. Completed,
+cancelled, abandoned, and interpreter-exit runs clean up their AgentShell-owned resource: a new
+session for session placement, or exactly the new window for borrowed-session placement. The host
+never kills unrelated tmux sessions or windows. Missing sessions, explicit name collisions, and
+unidentifiable windows fail closed without falling back to a new session. If tmux is unavailable,
+`TmuxUnavailableError` is raised and AgentShell does not silently fall back to the native host.
+Model discovery and MCP configuration remain local management operations.
+
+Execution host and isolation policy remain separate axes, avoiding one host class per host/policy
+combination. Optional hosts fail closed when a requested isolation policy cannot be transported.
 
 ### Execute
 
