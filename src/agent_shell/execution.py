@@ -339,3 +339,20 @@ class NativeExecutionHost:
         )
         transfer_process_guardian(process, run_handle)
         return run_handle
+
+
+def __getattr__(name: str):
+    """Lazily preserve the historical ``agent_shell.execution`` tmux imports."""
+    if name in {"TmuxExecutionHost", "TmuxPlacement", "TmuxUnavailableError"}:
+        from agent_shell.tmux import (
+            TmuxExecutionHost,
+            TmuxPlacement,
+            TmuxUnavailableError,
+        )
+
+        return {
+            "TmuxExecutionHost": TmuxExecutionHost,
+            "TmuxPlacement": TmuxPlacement,
+            "TmuxUnavailableError": TmuxUnavailableError,
+        }[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
