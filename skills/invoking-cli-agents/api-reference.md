@@ -188,6 +188,16 @@ class AgentShell:
 ## Execution Hosts and Isolation
 
 ```python
+from agent_shell import (
+    HerdrExecutionHost,
+    SubprocessTerminalLauncher,
+    TerminalWindowExecutionHost,
+    TerminalWindowLauncher,
+    TerminalWindowUnavailableError,
+    TmuxExecutionHost,
+    TmuxPlacement,
+    TmuxUnavailableError,
+)
 from agent_shell.execution import (
     ExecutionHost,
     IsolationPolicy,
@@ -203,8 +213,36 @@ from agent_shell.execution import (
 
 `ExecutionHost` creates a `RunHandle` for one command. The handle exposes `pid`, `stdin`,
 `stdout`, `stderr`, `returncode`, `wait()`, `communicate()`, `cancel()`, and `release()`.
-`NativeExecutionHost` is currently the only concrete host. Agent adapters use handles internally;
-existing `execute()` and `stream()` callers do not need to manage them.
+Agent adapters use handles internally; existing `execute()` and `stream()` callers do not need to
+manage them. `NativeExecutionHost` remains the backwards-compatible default.
+
+> **Experimental hosts:** `HerdrExecutionHost`, `TmuxExecutionHost`, and
+> `TerminalWindowExecutionHost` are opt-in experimental APIs. Their constructors, placement
+> options, supported platforms, and lifecycle behaviour may change in a later minor release. An
+> explicit request fails closed when its prerequisite or requested policy is unavailable; none of
+> these hosts silently falls back to native execution.
+
+| Host | Placement | Optional prerequisite | First-version limits |
+|------|-----------|-----------------------|----------------------|
+| `NativeExecutionHost` | Current local process environment | None | Composes with the selected isolation policy |
+| `HerdrExecutionHost` **(experimental)** | Owned one-shot Herdr pane/workspace | `herdr` executable | `NoIsolation`; `DEVNULL` or `PIPE` stdin |
+| `TmuxExecutionHost` **(experimental)** | Owned session, or owned window in a borrowed session | `tmux` executable | `NoIsolation`; `DEVNULL` or `PIPE` stdin |
+| `TerminalWindowExecutionHost` **(experimental)** | New graphical terminal window | Supported or injected terminal launcher | Linux-focused; headless/machine-controlled; `NoIsolation`; `DEVNULL` or `PIPE` stdin |
+
+Tmux placement is explicit when the default owned session is not suitable:
+
+```python
+TmuxExecutionHost()  # uniquely named, AgentShell-owned session
+TmuxExecutionHost(placement=TmuxPlacement.new_session(name="review"))
+TmuxExecutionHost(placement=TmuxPlacement.new_window("existing", focus=False))
+TmuxExecutionHost(placement=TmuxPlacement.current_session(focus=False))
+```
+
+The terminal host discovers a small built-in set of Linux terminal emulators. Set
+`AGENTSHELL_TERMINAL_LAUNCHER` for a simple executable override, or inject a
+`TerminalWindowLauncher`/`SubprocessTerminalLauncher` when the emulator needs custom arguments.
+Its visible window mirrors the agent's raw streams, but the agent remains headless and controlled
+by AgentShell; this is not the agent CLI's interactive harness interface.
 
 `NoIsolation` preserves historical native execution. `LinuxPidNamespaceIsolation` uses rootless
 user + PID namespaces, with a tiny PID 1 reaper and the CLI at PID 2 or later. It protects

@@ -105,6 +105,21 @@ classDiagram
         +launch(command, cwd, env, stdin, isolation_policy) NativeRunHandle
     }
 
+    class HerdrExecutionHost {
+        <<experimental>>
+        +launch(command, cwd, env, stdin, isolation_policy) RunHandle
+    }
+
+    class TmuxExecutionHost {
+        <<experimental>>
+        +launch(command, cwd, env, stdin, isolation_policy) RunHandle
+    }
+
+    class TerminalWindowExecutionHost {
+        <<experimental>>
+        +launch(command, cwd, env, stdin, isolation_policy) RunHandle
+    }
+
     class IsolationPolicy {
         <<Protocol>>
         +prepare(command, env) PreparedLaunch
@@ -140,6 +155,9 @@ classDiagram
     AgentShell --> ExecutionHost : selects
     AgentShell --> IsolationPolicy : selects
     NativeExecutionHost ..|> ExecutionHost : satisfies
+    HerdrExecutionHost ..|> ExecutionHost : satisfies
+    TmuxExecutionHost ..|> ExecutionHost : satisfies
+    TerminalWindowExecutionHost ..|> ExecutionHost : satisfies
     NativeExecutionHost --> NativeRunHandle : creates
     NativeRunHandle ..|> RunHandle : satisfies
     NoIsolation ..|> IsolationPolicy : satisfies
@@ -156,6 +174,11 @@ classDiagram
 ```
 
 The adapter pattern uses Python's `Protocol` (structural typing) rather than ABC, so adapters satisfy the contract implicitly without inheritance. Each adapter translates agent-specific CLI flags and NDJSON output into the shared `StreamEvent`/`AgentResponse` models, while the selected `ExecutionHost` owns process creation and returns a per-run `RunHandle`.
+
+`HerdrExecutionHost`, `TmuxExecutionHost`, and `TerminalWindowExecutionHost` are experimental,
+opt-in APIs. Their constructors, placement options, supported platforms, and lifecycle behaviour
+may change in a later minor release. `NativeExecutionHost` remains the backwards-compatible
+default, and an unavailable experimental host never silently falls back to it.
 
 Execution location and protection are separate axes. Existing callers default to
 `NativeExecutionHost()` plus `NoIsolation()` when `AGENTSHELL_ISOLATION_POLICY` is unset. The

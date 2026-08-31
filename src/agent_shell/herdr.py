@@ -431,7 +431,12 @@ class _HerdrRunHandle:
 
 
 class HerdrExecutionHost:
-    """Launch one-shot commands in uniquely owned Herdr panes."""
+    """Launch one-shot commands in uniquely owned Herdr panes.
+
+    .. warning::
+       This execution host is experimental. Its configuration and lifecycle contract may change
+       in a later minor release.
+    """
 
     def __init__(
         self,

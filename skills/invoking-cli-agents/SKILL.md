@@ -47,7 +47,8 @@ yields events in real-time — plus helpers for model discovery, health checks, 
 management. All are async. Invocation has three independent choices:
 
 - `agent_type`: which CLI (Claude Code, Codex, etc.)
-- `execution_host`: where/how the process is owned (`NativeExecutionHost` today)
+- `execution_host`: where/how the process is owned (native by default; experimental visible hosts
+  are available explicitly)
 - `isolation_policy`: what protection surrounds it (`NoIsolation` or Linux PID isolation)
 
 ### Execution Host and Isolation Policy
@@ -90,8 +91,24 @@ kernel support for unprivileged user/PID namespaces. An unavailable requested po
 This policy is **not a sandbox**: filesystem, credentials, network, agent tools, and resource use
 remain available. Background descendants cannot outlive the isolated namespace. It applies to
 `execute()`, `stream()`, and `health_check()`; `list_models()` and MCP configuration are local
-management operations. `NativeExecutionHost` is the only shipped host today. Tmux and Herdr are
-future host possibilities, not current APIs.
+management operations.
+
+### Experimental Execution Hosts
+
+`NativeExecutionHost` remains the backwards-compatible default. Three visible execution hosts
+are shipped as **experimental, opt-in APIs**:
+
+- `HerdrExecutionHost()` creates and owns a one-shot Herdr pane/workspace.
+- `TmuxExecutionHost()` creates an owned tmux session by default; `TmuxPlacement` can instead
+  select a named or current session and own only the newly-created window.
+- `TerminalWindowExecutionHost()` opens a headless, machine-controlled run in a graphical
+  terminal window through an injectable launcher.
+
+Their constructors, placement options, platform support, and lifecycle behaviour may change in a
+later minor release. They require optional external executables, support only `NoIsolation` in
+their first version, and fail closed rather than silently falling back to native execution. Use
+the stable default when visible placement is not required. See the execution-host section in
+[`api-reference.md`](api-reference.md) before selecting an experimental host.
 
 ### Discover Available Model Strings
 

@@ -392,6 +392,10 @@ async def _tmux_current_session(tmux_path: str) -> str:
 class TmuxExecutionHost:
     """Run one command in an AgentShell-owned tmux session or window.
 
+    .. warning::
+       This execution host is experimental. Its placement and lifecycle contract may change in a
+       later minor release.
+
     The first version intentionally supports only :class:`NoIsolation` and DEVNULL/PIPE stdin.  A
     private worker keeps the CLI's raw stdout/stderr off tmux's merged PTY stream while mirroring
     both streams into the visible pane.

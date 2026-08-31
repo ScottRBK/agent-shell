@@ -117,7 +117,14 @@ host/policy; model discovery and MCP configuration remain local management opera
 `NativeExecutionHost` remains the default. Execution hosts are opt-in and do not add Python
 dependencies.
 
-#### Herdr execution host
+> [!WARNING]
+> `HerdrExecutionHost`, `TmuxExecutionHost`, and `TerminalWindowExecutionHost` are experimental.
+> They are opt-in, and their constructors, placement options, supported platforms, and lifecycle
+> behaviour may change in a later minor release as real-world usage expands. Explicit requests
+> continue to fail closed when their external prerequisite or requested policy is unavailable;
+> AgentShell never silently substitutes `NativeExecutionHost`.
+
+#### Herdr execution host (experimental)
 
 An opt-in `HerdrExecutionHost` runs each command in a
 uniquely owned Herdr pane while preserving the same adapter API:
@@ -146,7 +153,7 @@ or worker exit cannot leave the target running. Other Unix platforms use the nor
 disconnect cleanup but do not provide this kernel-level guard; an abrupt worker or pane death may
 therefore require external cleanup.
 
-#### tmux execution host
+#### tmux execution host (experimental)
 
 For a visible tmux run, opt into `TmuxExecutionHost` (the `tmux` executable itself is an optional
 system prerequisite):
@@ -182,7 +189,7 @@ unidentifiable windows fail closed without falling back to a new session. If tmu
 `TmuxUnavailableError` is raised and AgentShell does not silently fall back to the native host.
 Model discovery and MCP configuration remain local management operations.
 
-#### Terminal-window execution host
+#### Terminal-window execution host (experimental)
 
 To watch a headless run in a new local graphical terminal window, inject the host into
 `AgentShell`:

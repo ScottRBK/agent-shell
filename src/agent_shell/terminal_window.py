@@ -475,6 +475,10 @@ atexit.register(_cleanup_terminal_runs)
 class TerminalWindowExecutionHost:
     """Run a headless agent CLI inside a new visible terminal window.
 
+    .. warning::
+       This execution host is experimental. Its launcher and lifecycle contract may change in a
+       later minor release.
+
     v1 is Linux-focused and supports only ``NoIsolation``.  The launcher is injected so
     terminal services remain an external, replaceable boundary; the default discovery is
     merely a convenience for local desktop use.
