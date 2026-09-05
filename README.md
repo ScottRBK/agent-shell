@@ -1,3 +1,5 @@
+![AgentShell — run CLI coding agents from Python](docs/assets/agentshell-banner.png)
+
 # Agent Shell
 Agent Shell is a light weight abstraction for executing a cli coding agent headlessly
 and returning the output that can be used programatically as a unified contract
@@ -38,8 +40,6 @@ pip install agent-shell-py
 ```
 
 ## Agent skills
-
-![Skill_Banner](docs/assets/skill_banner.png)
 
 The repository includes reusable skills that teach coding agents how to use AgentShell:
 
