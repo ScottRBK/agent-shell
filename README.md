@@ -1,6 +1,6 @@
-![AgentShell — run CLI coding agents from Python](docs/assets/agentshell-banner.png)
+![AgentShell — run CLI coding agents from Python](docs/assets/agentshell-banner.png?v=rounded)
 
-# Agent Shell
+<h1 align="center">Agent Shell</h1>
 Agent Shell is a light weight abstraction for executing a cli coding agent headlessly
 and returning the output that can be used programatically as a unified contract
 
