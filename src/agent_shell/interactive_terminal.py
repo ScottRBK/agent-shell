@@ -76,7 +76,8 @@ class TmuxTerminalSession:
             if placement.kind == "new-session":
                 args = ["new-session", "-d", "-s", session, "-x", "100", "-y", "30"]
             elif placement.kind == "split-pane":
-                args = ["split-window", "-h", "-t", os.environ["TMUX_PANE"]]
+                args = ["split-window", "-h" if placement.direction == "right" else "-v",
+                        "-t", os.environ["TMUX_PANE"]]
                 if not placement.focus:
                     args.append("-d")
             else:

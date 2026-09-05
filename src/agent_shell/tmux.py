@@ -44,6 +44,7 @@ class TmuxPlacement:
     _kind: Literal["new-session", "new-window", "current-window", "split-pane"]
     _session_name: str | None = None
     _focus: bool = False
+    _direction: Literal["right", "down"] = "right"
 
     @classmethod
     def new_session(cls, name: str | None = None) -> TmuxPlacement:
@@ -84,14 +85,23 @@ class TmuxPlacement:
         return self._kind
 
     @classmethod
-    def split_pane(cls, focus: bool = False) -> TmuxPlacement:
-        """Split beside the caller's TMUX_PANE, owning only the newly created pane.
+    def split_pane(
+        cls, focus: bool = False, *, direction: Literal["right", "down"] = "right",
+    ) -> TmuxPlacement:
+        """Split right of or below the caller's TMUX_PANE, owning only the new pane.
 
         By default keyboard focus stays with the caller. Requires running inside tmux.
         """
         if not isinstance(focus, bool):
             raise TypeError("focus must be a bool")
-        return cls(_kind="split-pane", _focus=focus)
+        if direction not in ("right", "down"):
+            raise ValueError("direction must be 'right' or 'down'")
+        return cls(_kind="split-pane", _focus=focus, _direction=direction)
+
+    @property
+    def direction(self) -> Literal["right", "down"]:
+        """Where a split pane is placed relative to the caller's pane."""
+        return self._direction
 
     @property
     def session(self) -> str | None:
@@ -506,7 +516,8 @@ class TmuxExecutionHost:
                 )
             elif placement.kind == "split-pane":
                 tmux_command.extend([
-                    "split-window", "-h", *([] if placement.focus else ["-d"]),
+                    "split-window", "-h" if placement.direction == "right" else "-v",
+                    *([] if placement.focus else ["-d"]),
                     "-t", os.environ["TMUX_PANE"], "-P", "-F", "#{pane_id}",
                 ])
             else:

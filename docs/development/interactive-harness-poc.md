@@ -82,6 +82,13 @@ discovery, and MCP management keep their existing behavior. Interactive operatio
 session API; it does not yet provide every headless option or guaranteed response collection.
 
 For a split, use `TmuxPlacement.split_pane()` in place of `current_session()` above.
+Choose where the new pane appears with `direction`:
+
+```python
+TmuxPlacement.split_pane(direction="right")  # Side by side (the default).
+TmuxPlacement.split_pane(direction="down")   # Below the caller's pane.
+```
+
 Both headless and interactive launches support it. The target is the caller's `TMUX_PANE`,
 so changing the active pane elsewhere does not redirect the launch. `focus=True` selects the
 new pane immediately; the default keeps the caller focused. It fails clearly outside tmux.

@@ -67,12 +67,14 @@ async def current_tmux_terminal(isolated_tmux, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("focus", [False, True])
+@pytest.mark.parametrize("direction", [None, "right", "down"])
 async def test_split_accepts_input_and_preserves_original_pane(
-    current_tmux_terminal, isolated_tmux, tmp_path, focus,
+    current_tmux_terminal, isolated_tmux, tmp_path, focus, direction,
 ):
     # Arrange
     original = current_tmux_terminal
-    host = TmuxExecutionHost(TmuxPlacement.split_pane(focus=focus))
+    options = {"direction": direction} if direction is not None else {}
+    host = TmuxExecutionHost(TmuxPlacement.split_pane(focus=focus, **options))
 
     # Act
     async with await host.launch_interactive(
@@ -90,8 +92,14 @@ async def test_split_accepts_input_and_preserves_original_pane(
         assert active == (child.pane_id if focus else original.pane_id)
         panes = [line.split() for line in layout.splitlines()]
         assert len(panes) == 2
-        assert panes[0][2] == panes[1][2]  # Side by side, rather than above/below.
-        assert int(panes[0][1]) < int(panes[1][1])
+        assert panes[0][0] == original.pane_id
+        assert panes[1][0] == child.pane_id
+        if direction == "down":
+            assert panes[0][1] == panes[1][1]
+            assert int(panes[0][2]) < int(panes[1][2])
+        else:
+            assert panes[0][2] == panes[1][2]
+            assert int(panes[0][1]) < int(panes[1][1])
     await original.send_text("still alive", submit=True)
     original_screen = await screen_contains(original, "ORIGINAL:still alive")
 
@@ -152,12 +160,13 @@ async def test_split_requires_current_tmux_context(isolated_tmux, tmp_path, inte
 
 
 @pytest.mark.parametrize("cancel", [False, True])
+@pytest.mark.parametrize("direction", ["right", "down"])
 async def test_headless_split_preserves_original_pane(
-    current_tmux_terminal, isolated_tmux, tmp_path, cancel,
+    current_tmux_terminal, isolated_tmux, tmp_path, cancel, direction,
 ):
     # Arrange
     original = current_tmux_terminal
-    host = TmuxExecutionHost(TmuxPlacement.split_pane())
+    host = TmuxExecutionHost(TmuxPlacement.split_pane(direction=direction))
     code = "import time; print('HEADLESS', flush=True); time.sleep(60)" if cancel else (
         "print('HEADLESS', flush=True)"
     )
@@ -167,6 +176,8 @@ async def test_headless_split_preserves_original_pane(
     try:
         output = await asyncio.wait_for(handle.stdout.readline(), 5)
         panes = await isolated_tmux("list-panes", "-t", original.window_id, "-F", "#{pane_id}")
+        layout = await isolated_tmux("list-panes", "-t", original.window_id,
+                                     "-F", "#{pane_left} #{pane_top}")
         if cancel:
             await handle.cancel()
         else:
@@ -178,6 +189,13 @@ async def test_headless_split_preserves_original_pane(
     # Assert
     assert output == b"HEADLESS\n"
     assert len(panes.splitlines()) == 2
+    first, second = [list(map(int, line.split())) for line in layout.splitlines()]
+    if direction == "down":
+        assert first[0] == second[0]
+        assert first[1] < second[1]
+    else:
+        assert first[1] == second[1]
+        assert first[0] < second[0]
     assert "ORIGINAL:still alive" in await screen_contains(original, "ORIGINAL:still alive")
     assert await isolated_tmux("list-panes", "-t", original.window_id,
                                "-F", "#{pane_id}") == original.pane_id
