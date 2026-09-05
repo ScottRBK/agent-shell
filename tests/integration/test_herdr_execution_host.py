@@ -662,6 +662,7 @@ async def test_herdr_worker_closes_its_pane_after_host_interpreter_exit(tmp_path
 
 async def test_herdr_worker_bounds_hung_cleanup_cli_calls(tmp_path):
     # Arrange
+    # Allow Python startup on shared CI runners while bounding the simulated 60-second hang.
     herdr_bin = tmp_path / "herdr"
     pane_close_started = tmp_path / "pane-close-started"
     workspace_closed = tmp_path / "workspace-closed"
@@ -686,7 +687,7 @@ async def test_herdr_worker_bounds_hung_cleanup_cli_calls(tmp_path):
         "import asyncio, os, sys\n"
         "from agent_shell.herdr import HerdrExecutionHost\n"
         "async def main():\n"
-        "    host = HerdrExecutionHost(herdr_command=sys.argv[1], cleanup_timeout=0.02)\n"
+        "    host = HerdrExecutionHost(herdr_command=sys.argv[1], cleanup_timeout=0.5)\n"
         "    run = await host.launch([sys.executable, '-c', 'pass'], cwd=sys.argv[2])\n"
         "    open(sys.argv[3], 'w').write(str(run.pid))\n"
         "    os._exit(0)\n"
@@ -708,7 +709,7 @@ async def test_herdr_worker_bounds_hung_cleanup_cli_calls(tmp_path):
     try:
         # Act
         await asyncio.wait_for(owner.wait(), timeout=2.0)
-        for _ in range(100):
+        for _ in range(300):
             if workspace_closed.exists():
                 break
             await asyncio.sleep(0.01)
