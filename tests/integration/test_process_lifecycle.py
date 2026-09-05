@@ -58,8 +58,9 @@ CLI_NAME = {
 }
 
 # Reads its script from the environment so one file serves every adapter and every scenario.
-# The grandchild is spawned first and its pid published before any output, so a consumer that
-# has seen one event knows the grandchild exists.
+# The grandchild is spawned before any output, so a consumer that has seen one event knows the
+# grandchild exists. Tests that need the host to observe its lifecycle use the lock file rather
+# than the PID: an isolated child's PID is meaningful only inside its PID namespace.
 #
 # With `grandchild_lock_file` the grandchild holds an exclusive flock for its whole life
 # instead of just sleeping. The kernel releases that lock when the last descriptor on it
@@ -67,7 +68,7 @@ CLI_NAME = {
 # death directly rather than inferring it from a pid that may have been recycled.
 #
 # The grandchild gets DEVNULL for all three streams rather than inheriting the child's pipes.
-# It stays in the guardian-owned process group, but it no longer holds the child's stdout and
+# Unless explicitly detached, it stays in the guardian-owned group. It never holds the stdout and
 # stderr open — and asyncio
 # resolves `Process.wait()` from `_call_connection_lost`, which `_try_finish` only reaches once
 # `all(p.disconnected ...)`. Inheriting the pipes therefore gated the child's `wait()` on the
@@ -78,7 +79,7 @@ import json, os, subprocess, sys, time
 spec = json.loads(os.environ["AGENTSHELL_FAKE_CLI"])
 if spec.get("required_pid") is not None and os.getpid() != spec["required_pid"]:
     sys.exit(88)
-if spec.get("grandchild_pid_file"):
+if spec.get("grandchild_pid_file") or spec.get("grandchild_lock_file"):
     if spec.get("grandchild_lock_file"):
         argv = [sys.executable, "-c",
                 "import fcntl, sys, time\\n"
@@ -88,10 +89,16 @@ if spec.get("grandchild_pid_file"):
                 spec["grandchild_lock_file"]]
     else:
         argv = ["sleep", "60"]
-    grandchild = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    with open(spec["grandchild_pid_file"], "w") as f:
-        f.write(str(grandchild.pid))
+    grandchild = subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=spec.get("grandchild_detached", False),
+    )
+    if spec.get("grandchild_pid_file"):
+        with open(spec["grandchild_pid_file"], "w") as f:
+            f.write(str(grandchild.pid))
 if spec.get("sleep_before_stdout"):
     time.sleep(spec["sleep_before_stdout"])
 for event in spec["stdout"]:
@@ -100,6 +107,9 @@ for event in spec["stdout"]:
 for output in spec.get("raw_stdout", []):
     sys.stdout.write(output)
     sys.stdout.flush()
+if spec.get("exit_gate"):
+    while not os.path.exists(spec["exit_gate"]):
+        time.sleep(0.01)
 if spec.get("hang"):
     time.sleep(60)
 if spec.get("terminate_signal"):
@@ -529,6 +539,66 @@ async def test_agentshell_applies_pid_isolation_selected_by_environment(
 
     # Assert
     assert response.response == ""
+
+
+@pytest.mark.parametrize("mount_proc", [True, False])
+@pytest.mark.parametrize("ending", ["normal", "cancel", "timeout"])
+async def test_pid_isolation_cleans_up_a_detached_child(
+        fake_cli, tmp_path, mount_proc, ending):
+    # Arrange — prove the detached child holds a kernel lock before ending its namespace.
+    # Observing lock release avoids interpreting namespace-local PIDs on the host.
+    shell = AgentShell(
+        agent_type=AgentType.CLAUDE_CODE,
+        execution_host=NativeExecutionHost(),
+        isolation_policy=LinuxPidNamespaceIsolation(mount_proc=mount_proc),
+    )
+    lock_file = tmp_path / "grandchild.lock"
+    exit_gate = tmp_path / "exit"
+    fake_cli(
+        stdout=[OK_RESULT_EVENT[ClaudeCodeAdapter]],
+        exit_gate=str(exit_gate),
+        grandchild_lock_file=str(lock_file),
+        grandchild_detached=True,
+        required_pid=2,
+    )
+
+    async def consume_stream():
+        async for _ in shell.stream(cwd=str(tmp_path), prompt="ping"):
+            pass
+
+    task = asyncio.create_task(consume_stream())
+    try:
+        ready = await _wait_until(
+            lambda: lock_file.exists() and _lock_is_held(str(lock_file))
+        )
+        if not ready:
+            if task.done():
+                error = task.exception()
+                if isinstance(error, IsolationUnavailableError):
+                    pytest.skip(str(error))
+            pytest.fail("fake CLI grandchild never acquired its liveness lock")
+
+        # Act
+        if ending == "normal":
+            exit_gate.touch()
+            await asyncio.wait_for(task, timeout=5)
+        elif ending == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(task, timeout=0.05)
+
+        # Assert
+        assert await _wait_until(
+            lambda: not _lock_is_held(str(lock_file))
+        ), f"{ending} left its detached grandchild running"
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 @pytest.mark.parametrize("adapter_cls", ADAPTERS)

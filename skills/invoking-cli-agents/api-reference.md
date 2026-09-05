@@ -245,10 +245,22 @@ Its visible window mirrors the agent's raw streams, but the agent remains headle
 by AgentShell; this is not the agent CLI's interactive harness interface.
 
 `NoIsolation` preserves historical native execution. `LinuxPidNamespaceIsolation` uses rootless
-user + PID namespaces, with a tiny PID 1 reaper and the CLI at PID 2 or later. It protects
-AgentShell's ancestors from direct same-user signals sent inside the child namespace. It is not a
-filesystem, credential, network, tool, resource, or general security sandbox. Background
-descendants terminate when the namespace ends.
+user + PID namespaces, with a tiny PID 1 reaper and the CLI at PID 2 or later. Its constructor is:
+
+```python
+LinuxPidNamespaceIsolation(*, mount_proc: bool = True)
+```
+
+The default mounts a private `/proc` view, while `mount_proc=False` omits only that mount. The
+opt-in mode retains the PID and direct-signal boundary, PID 1 reaper, and descendant cleanup, but
+inherits the outer `/proc` view; `ps` and `/proc` can then expose host PID information that differs
+from the child's `os.getpid()`. This is useful in restricted containers where the private proc
+mount is denied, and it does not create a private mount namespace. The argument must be a real
+`bool`; other values raise `TypeError`.
+
+Both modes protect AgentShell's ancestors from direct same-user signals sent inside the child
+namespace. The policy is not a filesystem, credential, network, tool, resource, or general
+security sandbox. Background descendants terminate when the namespace ends.
 
 When `isolation_policy` is omitted, `AgentShell` reads `AGENTSHELL_ISOLATION_POLICY` at
 construction. The accepted values are `none` and `linux-pid-namespace`; if the variable is absent,
@@ -257,8 +269,11 @@ policy object takes precedence over the environment.
 
 The Linux policy requires `unshare` and supporting kernel configuration. An explicit request that
 cannot be satisfied raises `IsolationUnavailableError` before launching the CLI and never falls
-back to `NoIsolation`. The host/policy selection applies to `execute()`, `stream()`, and
-`health_check()`; model discovery and MCP configuration remain local management operations.
+back to `NoIsolation`; the availability probe uses the selected `mount_proc` mode. The environment
+setting `AGENTSHELL_ISOLATION_POLICY=linux-pid-namespace` selects the strict default
+`mount_proc=True` mode; use an explicit policy object for `mount_proc=False`. The host/policy
+selection applies to `execute()`, `stream()`, and `health_check()`; model discovery and MCP
+configuration remain local management operations.
 
 ### Model discovery semantics
 

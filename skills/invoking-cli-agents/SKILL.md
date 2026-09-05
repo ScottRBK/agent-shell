@@ -84,8 +84,13 @@ shell = AgentShell(
 ```
 
 The Linux policy puts a tiny init/reaper at namespace PID 1 and the actual CLI at PID 2 or later.
-The CLI cannot see or signal AgentShell's ancestor processes. It requires Linux, `unshare`, and
-kernel support for unprivileged user/PID namespaces. An unavailable requested policy raises
+With the default private `/proc` mount, the CLI cannot see AgentShell's ancestors; both modes keep
+those ancestors outside the CLI's direct signal boundary. Use
+`LinuxPidNamespaceIsolation(mount_proc=False)` in a restricted container where the private proc
+mount is denied; that mode inherits outer `/proc` visibility while retaining the PID boundary,
+reaper, and descendant cleanup. The environment value `linux-pid-namespace` always selects the
+strict default (`mount_proc=True`). It requires Linux, `unshare`, and kernel support for
+unprivileged user/PID namespaces. An unavailable requested policy raises
 `IsolationUnavailableError` before the CLI starts; AgentShell never silently falls back.
 
 This policy is **not a sandbox**: filesystem, credentials, network, agent tools, and resource use

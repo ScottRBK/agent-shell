@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import shutil
 import signal
 import sys
@@ -56,6 +57,15 @@ class _RecordingExecutionHost:
         return self.run
 
 
+class _ProbeResult:
+    def __init__(self, returncode=0, stderr=b""):
+        self.returncode = returncode
+        self._stderr = stderr
+
+    async def communicate(self):
+        return b"", self._stderr
+
+
 @pytest.mark.parametrize("agent_type", list(AgentType))
 async def test_cancelling_a_stream_uses_the_selected_hosts_run_handle(agent_type, tmp_path):
     # Arrange
@@ -97,6 +107,243 @@ async def test_native_host_launches_a_real_process_without_extra_configuration(t
     assert stderr == b"native stderr\n"
     assert returncode == 0
     assert run.returncode == 0
+
+
+@pytest.mark.parametrize(
+    ("mount_proc", "expected_options"),
+    [
+        (
+            None,
+            ("--user", "--map-current-user", "--pid", "--fork", "--mount-proc"),
+        ),
+        (
+            "environment",
+            ("--user", "--map-current-user", "--pid", "--fork", "--mount-proc"),
+        ),
+        ("explicit-over-environment", ("--user", "--map-current-user", "--pid", "--fork")),
+        (
+            True,
+            ("--user", "--map-current-user", "--pid", "--fork", "--mount-proc"),
+        ),
+        (False, ("--user", "--map-current-user", "--pid", "--fork")),
+    ],
+)
+async def test_pid_isolation_mount_proc_controls_probe_and_launch_command(
+        monkeypatch, mount_proc, expected_options):
+    # Arrange
+    monkeypatch.setattr(execution_module.sys, "platform", "linux")
+    monkeypatch.setattr(execution_module.shutil, "which", lambda _: "/usr/bin/unshare")
+    probe_calls = []
+
+    async def record_probe(*args, **kwargs):
+        probe_calls.append((args, kwargs))
+        return _ProbeResult()
+
+    monkeypatch.setattr(
+        execution_module.asyncio,
+        "create_subprocess_exec",
+        record_probe,
+    )
+    if isinstance(mount_proc, str):
+        monkeypatch.setenv("AGENTSHELL_ISOLATION_POLICY", "linux-pid-namespace")
+        kwargs = {}
+        if mount_proc == "explicit-over-environment":
+            kwargs["isolation_policy"] = execution_module.LinuxPidNamespaceIsolation(
+                mount_proc=False,
+            )
+        policy = AgentShell(agent_type=AgentType.CLAUDE_CODE, **kwargs).isolation_policy
+    else:
+        policy = (
+            execution_module.LinuxPidNamespaceIsolation()
+            if mount_proc is None
+            else execution_module.LinuxPidNamespaceIsolation(mount_proc=mount_proc)
+        )
+    command = [sys.executable, "-c", "pass"]
+
+    first = second = None
+    try:
+        # Act
+        first = await policy.prepare(command, None)
+        second = await policy.prepare(command, None)
+
+        # Assert
+        expected_probe = ["/usr/bin/unshare", *expected_options, "true"]
+        assert list(probe_calls[0][0]) == expected_probe
+        assert len(probe_calls) == 1
+
+        expected_launch_prefix = [
+            "/usr/bin/unshare",
+            *expected_options,
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+        ]
+        assert first.command[:len(expected_launch_prefix)] == expected_launch_prefix
+        assert first.command[-len(command):] == command
+        assert second.command == first.command
+    finally:
+        if first is not None:
+            first.failed()
+        if second is not None:
+            second.failed()
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "true", object()])
+def test_pid_isolation_mount_proc_requires_a_bool(value):
+    # Arrange / Act / Assert
+    with pytest.raises(TypeError, match="mount_proc"):
+        execution_module.LinuxPidNamespaceIsolation(mount_proc=value)
+
+
+async def test_pid_isolation_probe_is_mode_specific_and_fails_closed(
+        monkeypatch, tmp_path):
+    # Arrange
+    monkeypatch.setattr(execution_module.sys, "platform", "linux")
+    monkeypatch.setattr(execution_module.shutil, "which", lambda _: "/usr/bin/unshare")
+    probe_calls = []
+
+    async def mode_specific_probe(*args, **kwargs):
+        probe_calls.append((args, kwargs))
+        if "--mount-proc" in args:
+            return _ProbeResult(
+                returncode=1,
+                stderr=b"unshare: operation not permitted with --mount-proc",
+            )
+        return _ProbeResult()
+
+    monkeypatch.setattr(
+        execution_module.asyncio,
+        "create_subprocess_exec",
+        mode_specific_probe,
+    )
+    policy_without_proc = execution_module.LinuxPidNamespaceIsolation(mount_proc=False)
+    policy_with_proc = execution_module.LinuxPidNamespaceIsolation(mount_proc=True)
+    host = NativeExecutionHost()
+
+    prepared = None
+    try:
+        # Act
+        prepared = await policy_without_proc.prepare(
+            [sys.executable, "-c", "pass"],
+            None,
+        )
+        with pytest.raises(
+            execution_module.IsolationUnavailableError,
+            match="operation not permitted with --mount-proc",
+        ):
+            await host.launch(
+                [sys.executable, "-c", "raise SystemExit(88)"],
+                cwd=str(tmp_path),
+                isolation_policy=policy_with_proc,
+            )
+
+        # Assert
+        assert list(probe_calls[0][0]) == [
+            "/usr/bin/unshare",
+            "--user",
+            "--map-current-user",
+            "--pid",
+            "--fork",
+            "true",
+        ]
+        assert list(probe_calls[1][0]) == [
+            "/usr/bin/unshare",
+            "--user",
+            "--map-current-user",
+            "--pid",
+            "--fork",
+            "--mount-proc",
+            "true",
+        ]
+    finally:
+        if prepared is not None:
+            prepared.failed()
+
+
+@pytest.mark.parametrize(
+    ("mount_proc", "expected_options"),
+    [
+        (
+            True,
+            ("--user", "--map-current-user", "--pid", "--fork", "--mount-proc"),
+        ),
+        (False, ("--user", "--map-current-user", "--pid", "--fork")),
+    ],
+)
+async def test_pid_isolation_fails_closed_when_requested_mode_is_unavailable(
+        monkeypatch, tmp_path, mount_proc, expected_options):
+    # Arrange
+    monkeypatch.setattr(execution_module.sys, "platform", "linux")
+    monkeypatch.setattr(execution_module.shutil, "which", lambda _: "/usr/bin/unshare")
+    probe_calls = []
+
+    async def reject_probe(*args, **kwargs):
+        probe_calls.append((args, kwargs))
+        return _ProbeResult(
+            returncode=1,
+            stderr=b"unshare: operation not permitted",
+        )
+
+    monkeypatch.setattr(
+        execution_module.asyncio,
+        "create_subprocess_exec",
+        reject_probe,
+    )
+    policy = execution_module.LinuxPidNamespaceIsolation(mount_proc=mount_proc)
+    host = NativeExecutionHost()
+
+    # Act / Assert
+    with pytest.raises(
+        execution_module.IsolationUnavailableError,
+        match="operation not permitted",
+    ):
+        await host.launch(
+            [sys.executable, "-c", "raise SystemExit(88)"],
+            cwd=str(tmp_path),
+            isolation_policy=policy,
+        )
+
+    assert list(probe_calls[0][0]) == [
+        "/usr/bin/unshare",
+        *expected_options,
+        "true",
+    ]
+
+
+@pytest.mark.parametrize("mount_proc", [True, False])
+async def test_pid_isolation_proc_visibility_matches_the_requested_mode(tmp_path, mount_proc):
+    # Arrange
+    host = NativeExecutionHost()
+    policy = execution_module.LinuxPidNamespaceIsolation(mount_proc=mount_proc)
+
+    # Act
+    try:
+        run = await host.launch(
+            [
+                sys.executable,
+                "-c",
+                "import json, os, sys; print(json.dumps({"
+                "'pid': os.getpid(), 'proc_pid': int(os.readlink('/proc/self')), "
+                "'owner_visible': os.path.exists('/proc/' + sys.argv[1])}))",
+                str(os.getpid()),
+            ],
+            cwd=str(tmp_path),
+            isolation_policy=policy,
+        )
+    except execution_module.IsolationUnavailableError as error:
+        pytest.skip(str(error))
+    try:
+        stdout, stderr = await asyncio.wait_for(run.communicate(), timeout=5)
+    finally:
+        await run.cancel()
+
+    # Assert
+    assert run.returncode == 0, stderr.decode()
+    result = json.loads(stdout)
+    assert result["pid"] == 2
+    assert result["owner_visible"] is (not mount_proc)
+    assert (result["proc_pid"] == 2) is mount_proc
 
 
 async def test_pid_isolation_hides_the_owner_from_a_broad_cleanup_command(tmp_path):
@@ -162,16 +409,26 @@ async def test_pid_isolation_hides_the_owner_from_a_broad_cleanup_command(tmp_pa
     assert result["reported_returncode"] == -signal.SIGTERM
 
 
-async def test_pid_isolation_preserves_a_normal_nonzero_exit_code(tmp_path):
+@pytest.mark.parametrize("mount_proc", [True, False])
+@pytest.mark.parametrize(
+    ("script", "expected_status"),
+    [
+        ("raise SystemExit(0)", 0),
+        ("raise SystemExit(37)", 37),
+        ("import os, signal; os.kill(os.getpid(), signal.SIGTERM)", -signal.SIGTERM),
+    ],
+)
+async def test_pid_isolation_preserves_exit_and_signal_status(
+        tmp_path, mount_proc, script, expected_status):
     # Arrange
     host = NativeExecutionHost()
 
     # Act
     try:
         run = await host.launch(
-            [sys.executable, "-c", "raise SystemExit(37)"],
+            [sys.executable, "-c", script],
             cwd=str(tmp_path),
-            isolation_policy=execution_module.LinuxPidNamespaceIsolation(),
+            isolation_policy=execution_module.LinuxPidNamespaceIsolation(mount_proc=mount_proc),
         )
     except execution_module.IsolationUnavailableError as error:
         pytest.skip(str(error))
@@ -181,8 +438,8 @@ async def test_pid_isolation_preserves_a_normal_nonzero_exit_code(tmp_path):
     run.release()
 
     # Assert
-    assert returncode == 37
-    assert run.returncode == 37
+    assert returncode == expected_status
+    assert run.returncode == expected_status
 
 
 async def test_requested_pid_isolation_fails_instead_of_falling_back(

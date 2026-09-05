@@ -185,10 +185,15 @@ Execution location and protection are separate axes. Existing callers default to
 environment accepts `none` or `linux-pid-namespace` as a process-wide construction default;
 explicit `isolation_policy=` takes precedence, and invalid or empty values raise `ValueError`.
 `LinuxPidNamespaceIsolation` is a direct signal boundary: a tiny init/reaper is PID 1 and the CLI
-is PID 2 or later, so child-namespace processes cannot see or signal AgentShell's ancestors. It
-requires Linux, `unshare`, and enabled unprivileged user/PID namespaces; an unavailable request
-raises `IsolationUnavailableError` and never falls back. This is not a general sandbox and does
-not restrict filesystem, credentials, network, tools, or resources. The host/policy applies to
+is PID 2 or later, so child-namespace processes cannot directly signal AgentShell's ancestors.
+The default `mount_proc=True` also hides those ancestors through a private `/proc` mount.
+Explicit `mount_proc=False` retains the PID boundary and descendant cleanup while inheriting the
+outer `/proc` view, exposing process metadata and potentially confusing tools that use its PIDs.
+It does not create a private mount namespace. The environment value `linux-pid-namespace` remains
+strict; each policy probes its own requested mode. It requires Linux, `unshare`, and enabled
+unprivileged user/PID namespaces; an unavailable request raises `IsolationUnavailableError` and
+never falls back. This is not a general sandbox and does not restrict filesystem, credentials,
+network, tools, or resources. The host/policy applies to
 `execute()`, `stream()`, and `health_check()`; model discovery and MCP configuration remain local.
 
 `output_tokens` is a cost measure — the billed output-token count, which **includes reasoning tokens** (billed at the output rate). Each adapter normalises this so the value is consistent across agents (e.g. OpenCode reports reasoning in a sibling field, so its adapter adds it back).

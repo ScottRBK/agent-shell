@@ -105,9 +105,25 @@ shell = AgentShell(
 ```
 
 The policy runs a tiny namespace init as PID 1 and the real CLI as PID 2 or later. Processes in
-that child namespace cannot see or signal AgentShell's ancestor processes. The feature requires
-Linux, the `unshare` command, and kernel support for unprivileged user/PID namespaces. If any are
-unavailable, launching raises `IsolationUnavailableError`; it never silently falls back.
+that child namespace cannot signal AgentShell's ancestor processes. With the default private
+`/proc` mount they cannot see those ancestors either. The feature requires Linux, the `unshare`
+command, and kernel support for unprivileged user/PID namespaces. If any are unavailable,
+launching raises `IsolationUnavailableError`; it never silently falls back.
+
+`LinuxPidNamespaceIsolation()` mounts a private `/proc` view by default, so tools such as `ps`
+show namespace PIDs. In a restricted container where that mount is denied but the PID namespace
+itself is available, opt into the inherited outer `/proc` view explicitly:
+
+```python
+isolation_policy=LinuxPidNamespaceIsolation(mount_proc=False)
+```
+
+The PID and signal boundary, PID 1 reaper, and descendant cleanup are retained, but `/proc` and
+`ps` can then expose outer PID information that disagrees with the child's `os.getpid()`. The
+selected mode is checked during the availability probe and still fails closed when unavailable;
+it does not create a private mount namespace. The environment setting
+`AGENTSHELL_ISOLATION_POLICY=linux-pid-namespace` always selects the default `mount_proc=True`
+mode; use the explicit constructor for the opt-in mode.
 
 This is **direct-signal protection, not a sandbox**. It does not restrict files, credentials,
 network access, tools, or resource consumption. Any background descendants are also terminated

@@ -1,6 +1,6 @@
 """Real-CLI smoke coverage for the opt-in execution boundary.
 
-Local-only: this uses the authenticated Claude Code CLI and incurs a small Haiku call.
+Local-only: this uses the authenticated Codex CLI and incurs a small gpt-5.4-mini call per mode.
 """
 
 import asyncio
@@ -245,28 +245,46 @@ async def test_real_herdr_host_cancels_target_and_removes_owned_resources(tmp_pa
     assert target_gone
 
 
-async def test_real_claude_health_check_completes_inside_pid_isolation():
+@pytest.mark.parametrize(
+    "mount_proc",
+    [
+        pytest.param(True, id="private-proc"),
+        pytest.param(False, id="inherited-proc"),
+    ],
+)
+async def test_real_codex_health_check_completes_inside_pid_isolation(tmp_path, mount_proc):
     # Arrange
-    policy = LinuxPidNamespaceIsolation()
+    policy = LinuxPidNamespaceIsolation(mount_proc=mount_proc)
     host = NativeExecutionHost()
     try:
         probe = await host.launch(
-            [sys.executable, "-c", "pass"],
-            cwd="/tmp",
+            [
+                sys.executable,
+                "-c",
+                "import json, os; print(json.dumps({"
+                "'pid': os.getpid(), 'proc_pid': int(os.readlink('/proc/self'))}))",
+            ],
+            cwd=str(tmp_path),
             isolation_policy=policy,
         )
     except IsolationUnavailableError as error:
         pytest.skip(str(error))
-    await probe.communicate()
-    probe.release()
+    try:
+        stdout, stderr = await asyncio.wait_for(probe.communicate(), timeout=5.0)
+    finally:
+        await probe.cancel()
+    assert probe.returncode == 0, stderr.decode()
+    namespace = json.loads(stdout)
+    assert namespace["pid"] == 2
+    assert (namespace["proc_pid"] == 2) is mount_proc
 
     shell = AgentShell(
-        agent_type=AgentType.CLAUDE_CODE,
+        agent_type=AgentType.CODEX,
         isolation_policy=policy,
     )
 
     # Act
-    result = await shell.health_check(cwd="/tmp", model="haiku")
+    result = await shell.health_check(cwd=str(tmp_path), model="gpt-5.4-mini", timeout=60.0)
 
     # Assert
     assert result.healthy is True, result.exception

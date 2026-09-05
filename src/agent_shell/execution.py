@@ -137,15 +137,32 @@ os._exit(returncode if 0 <= returncode <= 255 else 128 + (-returncode))
 
 
 class LinuxPidNamespaceIsolation:
-    """Hide AgentShell's ancestors inside a rootless Linux PID namespace.
+    """Isolate CLI process signals with a rootless Linux PID namespace.
 
     This is direct-signal isolation, not a general security sandbox. The namespace's PID 1
-    is a tiny reaper and the requested CLI runs as PID 2 or later.
+    is a tiny reaper and the requested CLI runs as PID 2 or later. By default, ``/proc`` is
+    mounted for the namespace so proc tools report namespace PIDs. Set ``mount_proc=False``
+    to retain the inherited outer ``/proc`` view; the PID and signal boundary, reaper, and
+    descendant cleanup remain enabled, but proc tools can then expose ancestor PID information.
     """
 
-    def __init__(self):
+    def __init__(self, *, mount_proc: bool = True) -> None:
+        if type(mount_proc) is not bool:
+            raise TypeError("mount_proc must be a bool")
+        self._mount_proc = mount_proc
         self._available = False
         self._unshare_path: str | None = None
+
+    def _unshare_options(self) -> list[str]:
+        options = [
+            "--user",
+            "--map-current-user",
+            "--pid",
+            "--fork",
+        ]
+        if self._mount_proc:
+            options.append("--mount-proc")
+        return options
 
     async def _ensure_available(self) -> str:
         if self._available and self._unshare_path is not None:
@@ -164,11 +181,7 @@ class LinuxPidNamespaceIsolation:
         try:
             probe = await asyncio.create_subprocess_exec(
                 unshare_path,
-                "--user",
-                "--map-current-user",
-                "--pid",
-                "--fork",
-                "--mount-proc",
+                *self._unshare_options(),
                 "true",
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.DEVNULL,
@@ -201,11 +214,7 @@ class LinuxPidNamespaceIsolation:
         child_env["AGENTSHELL_STATUS_FD"] = str(status_write_fd)
         wrapped_command = [
             unshare_path,
-            "--user",
-            "--map-current-user",
-            "--pid",
-            "--fork",
-            "--mount-proc",
+            *self._unshare_options(),
             sys.executable,
             "-I",
             "-S",
