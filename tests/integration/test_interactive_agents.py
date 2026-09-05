@@ -13,6 +13,7 @@ from agent_shell import TmuxExecutionHost
 from agent_shell.models.agent import AgentType
 from agent_shell.shell import AgentShell
 from tests.integration.test_interactive_terminal import isolated_tmux, screen_contains  # noqa: F401
+from tests.integration.test_interactive_terminal import current_tmux_terminal  # noqa: F401
 
 
 def install_cli(tmp_path, monkeypatch, name, source):
@@ -204,7 +205,10 @@ time.sleep(60)
         assert third.type == "result"
 
 
-async def test_demo_controller_sends_prompt_and_cleans_up(isolated_tmux, tmp_path, monkeypatch):
+@pytest.mark.parametrize("split", [False, True])
+async def test_demo_controller_sends_prompt_and_cleans_up(
+    current_tmux_terminal, isolated_tmux, tmp_path, monkeypatch, split,
+):
     # Arrange
     install_cli(tmp_path, monkeypatch, "codex", '''
 import json, subprocess, sys, tomllib
@@ -216,6 +220,7 @@ for prompt in sys.stdin:
     demo = Path(__file__).parents[2] / "examples" / "interactive_demo.py"
     process = await asyncio.create_subprocess_exec(
         sys.executable, str(demo), "--agent", "codex", "--cwd", str(tmp_path),
+        *(["--split-pane"] if split else []),
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -243,6 +248,8 @@ for prompt in sys.stdin:
     assert process.returncode == 0, stderr
     assert any("Demo received hello" in line for line in output)
     assert any("Closed all demo sessions" in line for line in output)
+    assert await isolated_tmux("list-panes", "-t", current_tmux_terminal.window_id,
+                               "-F", "#{pane_id}") == current_tmux_terminal.pane_id
 
 
 async def test_cursor_plugin_reports_only_verified_session_metadata(

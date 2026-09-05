@@ -13,7 +13,12 @@ import tempfile
 import uuid
 
 from agent_shell.execution import IsolationPolicy, IsolationUnavailableError, NoIsolation
-from agent_shell.tmux import TmuxPlacement, TmuxUnavailableError, _tmux_current_session
+from agent_shell.tmux import (
+    TmuxPlacement,
+    TmuxUnavailableError,
+    _tmux_current_session,
+    _tmux_exact_session_target,
+)
 
 
 class TmuxTerminalSession:
@@ -57,7 +62,7 @@ class TmuxTerminalSession:
             )
         placement = placement or TmuxPlacement.new_session()
         session = placement.session or f"agentshell-ui-{uuid.uuid4().hex}"
-        if placement.kind == "current-window":
+        if placement.kind in {"current-window", "split-pane"}:
             session = await _tmux_current_session(tmux)
         directory = Path(tempfile.mkdtemp(prefix="agentshell-ui-"))
         terminal = cls(tmux, directory)
@@ -70,8 +75,12 @@ class TmuxTerminalSession:
             worker = str(Path(__file__).with_name("interactive_worker.py"))
             if placement.kind == "new-session":
                 args = ["new-session", "-d", "-s", session, "-x", "100", "-y", "30"]
+            elif placement.kind == "split-pane":
+                args = ["split-window", "-h", "-t", os.environ["TMUX_PANE"]]
+                if not placement.focus:
+                    args.append("-d")
             else:
-                args = ["new-window", "-t", session]
+                args = ["new-window", "-t", _tmux_exact_session_target(session)]
                 if not placement.focus:
                     args.append("-d")
             args += ["-P", "-F", "#{pane_id} #{window_id}", "--",
@@ -82,6 +91,7 @@ class TmuxTerminalSession:
             terminal.pane_id, terminal.window_id = identity
             terminal._resource = (
                 ("kill-session", session) if placement.kind == "new-session"
+                else ("kill-pane", terminal.pane_id) if placement.kind == "split-pane"
                 else ("kill-window", terminal.window_id)
             )
             (directory / "start").touch()
@@ -178,7 +188,9 @@ class TmuxTerminalSession:
         self._check_open()
         if type(columns) is not int or type(rows) is not int or min(columns, rows) < 2:
             raise ValueError("Terminal dimensions must be integers of at least 2")
-        await self._command("resize-window", "-t", self.window_id,
+        split = self._resource == ("kill-pane", self.pane_id)
+        await self._command("resize-pane" if split else "resize-window",
+                            "-t", self.pane_id if split else self.window_id,
                             "-x", str(columns), "-y", str(rows))
 
     async def close(self) -> None:

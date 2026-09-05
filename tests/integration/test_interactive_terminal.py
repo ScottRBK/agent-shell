@@ -5,22 +5,182 @@ import os
 import shutil
 import sys
 import tempfile
+from pathlib import Path
+import subprocess
 
 import pytest
 
 from agent_shell import TmuxExecutionHost, TmuxPlacement
 from agent_shell.execution import IsolationUnavailableError, LinuxPidNamespaceIsolation
+from agent_shell.models.agent import AgentType
+from agent_shell.shell import AgentShell
 
 
 @pytest.fixture
 def isolated_tmux(monkeypatch):
-    if not shutil.which("tmux"):
+    real_tmux = shutil.which("tmux")
+    if not real_tmux:
         pytest.skip("interactive terminal integration tests require tmux")
     with tempfile.TemporaryDirectory(prefix="as-tmux-test-") as directory:
+        # Every command, including worker cleanup, explicitly selects this test's server.
+        wrapper = Path(directory) / "tmux"
+        wrapper.write_text(
+            f"#!{sys.executable}\nimport os, sys\n"
+            f"os.execv({real_tmux!r}, [{real_tmux!r}, '-L', 'test', *sys.argv[1:]])\n"
+        )
+        wrapper.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{directory}{os.pathsep}{os.environ['PATH']}")
         monkeypatch.setenv("TMUX_TMPDIR", directory)
         monkeypatch.delenv("TMUX", raising=False)
         monkeypatch.delenv("TMUX_PANE", raising=False)
-        yield
+
+        async def command(*args):
+            process = await asyncio.create_subprocess_exec(
+                str(wrapper), *args, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+            assert process.returncode == 0, stderr.decode()
+            return stdout.decode().strip()
+
+        try:
+            yield command
+        finally:
+            subprocess.run(
+                [str(wrapper), "kill-server"], stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, timeout=5,
+            )
+
+
+@pytest.fixture
+async def current_tmux_terminal(isolated_tmux, tmp_path, monkeypatch):
+    async with await TmuxExecutionHost().launch_interactive(
+        [sys.executable, "-c",
+         "print('ORIGINAL', flush=True); print('ORIGINAL:' + input(), flush=True); input()"],
+        str(tmp_path),
+    ) as original:
+        await screen_contains(original, "ORIGINAL")
+        socket = await isolated_tmux("display-message", "-p", "#{socket_path}")
+        monkeypatch.setenv("TMUX", f"{socket},0,0")
+        monkeypatch.setenv("TMUX_PANE", original.pane_id)
+        yield original
+
+
+@pytest.mark.parametrize("focus", [False, True])
+async def test_split_accepts_input_and_preserves_original_pane(
+    current_tmux_terminal, isolated_tmux, tmp_path, focus,
+):
+    # Arrange
+    original = current_tmux_terminal
+    host = TmuxExecutionHost(TmuxPlacement.split_pane(focus=focus))
+
+    # Act
+    async with await host.launch_interactive(
+        [sys.executable, "-c", "print('READY', flush=True); print('REPLY:' + input()); input()"],
+        str(tmp_path),
+    ) as child:
+        await screen_contains(child, "READY")
+        await child.send_text("hello split", submit=True)
+        screen = await screen_contains(child, "REPLY:hello split")
+        active = await isolated_tmux("display-message", "-p", "-t", original.window_id,
+                                     "#{pane_id}")
+        layout = await isolated_tmux("list-panes", "-t", original.window_id,
+                                     "-F", "#{pane_id} #{pane_left} #{pane_top}")
+        assert child.window_id == original.window_id
+        assert active == (child.pane_id if focus else original.pane_id)
+        panes = [line.split() for line in layout.splitlines()]
+        assert len(panes) == 2
+        assert panes[0][2] == panes[1][2]  # Side by side, rather than above/below.
+        assert int(panes[0][1]) < int(panes[1][1])
+    await original.send_text("still alive", submit=True)
+    original_screen = await screen_contains(original, "ORIGINAL:still alive")
+
+    # Assert
+    assert "REPLY:hello split" in screen
+    assert "ORIGINAL:still alive" in original_screen
+    assert await isolated_tmux("list-panes", "-t", original.window_id,
+                               "-F", "#{pane_id}") == original.pane_id
+
+
+async def test_split_resize_preserves_window_size(current_tmux_terminal, isolated_tmux, tmp_path):
+    # Arrange
+    original = current_tmux_terminal
+    window_size = await isolated_tmux("display-message", "-p", "-t", original.window_id,
+                                      "#{window_width} #{window_height}")
+    async with await TmuxExecutionHost(TmuxPlacement.split_pane()).launch_interactive(
+        [sys.executable, "-c", "input()"], str(tmp_path),
+    ) as child:
+        # Act
+        await child.resize(columns=30, rows=30)
+
+        # Assert
+        assert await isolated_tmux("display-message", "-p", "-t", original.window_id,
+                                   "#{window_width} #{window_height}") == window_size
+        assert await isolated_tmux("display-message", "-p", "-t", child.pane_id,
+                                   "#{pane_width}") == "30"
+
+
+async def test_failed_split_launch_preserves_original_pane(
+    current_tmux_terminal, isolated_tmux, tmp_path,
+):
+    # Arrange
+    from agent_shell import TmuxUnavailableError
+    original = current_tmux_terminal
+    host = TmuxExecutionHost(TmuxPlacement.split_pane())
+
+    # Act
+    with pytest.raises(TmuxUnavailableError, match="No such file"):
+        await host.launch_interactive([str(tmp_path / "missing-command")], str(tmp_path))
+    await original.send_text("still alive", submit=True)
+
+    # Assert
+    assert "ORIGINAL:still alive" in await screen_contains(original, "ORIGINAL:still alive")
+    assert await isolated_tmux("list-panes", "-t", original.window_id,
+                               "-F", "#{pane_id}") == original.pane_id
+
+
+@pytest.mark.parametrize("interactive", [True, False])
+async def test_split_requires_current_tmux_context(isolated_tmux, tmp_path, interactive):
+    # Arrange
+    host = TmuxExecutionHost(TmuxPlacement.split_pane())
+    launch = host.launch_interactive if interactive else host.launch
+
+    # Act / Assert
+    from agent_shell import TmuxUnavailableError
+    with pytest.raises(TmuxUnavailableError, match="requires running inside tmux"):
+        await launch([sys.executable, "-c", "pass"], str(tmp_path))
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_headless_split_preserves_original_pane(
+    current_tmux_terminal, isolated_tmux, tmp_path, cancel,
+):
+    # Arrange
+    original = current_tmux_terminal
+    host = TmuxExecutionHost(TmuxPlacement.split_pane())
+    code = "import time; print('HEADLESS', flush=True); time.sleep(60)" if cancel else (
+        "print('HEADLESS', flush=True)"
+    )
+
+    # Act
+    handle = await host.launch([sys.executable, "-c", code], str(tmp_path))
+    try:
+        output = await asyncio.wait_for(handle.stdout.readline(), 5)
+        panes = await isolated_tmux("list-panes", "-t", original.window_id, "-F", "#{pane_id}")
+        if cancel:
+            await handle.cancel()
+        else:
+            await asyncio.wait_for(handle.wait(), 5)
+    finally:
+        handle.release()
+    await original.send_text("still alive", submit=True)
+
+    # Assert
+    assert output == b"HEADLESS\n"
+    assert len(panes.splitlines()) == 2
+    assert "ORIGINAL:still alive" in await screen_contains(original, "ORIGINAL:still alive")
+    assert await isolated_tmux("list-panes", "-t", original.window_id,
+                               "-F", "#{pane_id}") == original.pane_id
 
 
 async def screen_contains(terminal, text):
@@ -124,6 +284,59 @@ async def test_close_kills_child_but_preserves_borrowed_session(isolated_tmux, t
     assert status < 0
     assert "ORIGINAL" in screen
     assert original_status is None
+
+
+async def test_agentshell_interactive_exactly_targets_numeric_session(
+    isolated_tmux, tmp_path, monkeypatch,
+):
+    # Arrange
+    real_tmux = shutil.which("tmux")
+    session_name = "6"
+    create = await asyncio.create_subprocess_exec(
+        real_tmux, "-f", "/dev/null", "new-session", "-d", "-s", session_name,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    _, create_stderr = await create.communicate()
+    assert create.returncode == 0, create_stderr.decode()
+
+    argv_file = tmp_path / "tmux-argv"
+    wrapper = tmp_path / "tmux"
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        "import pathlib, os, sys\n"
+        "args = sys.argv[1:]\n"
+        "if 'new-window' in args:\n"
+        f"    pathlib.Path({str(argv_file)!r}).write_text('\\0'.join(args))\n"
+        f"os.execv({real_tmux!r}, [{real_tmux!r}, *args])\n"
+    )
+    wrapper.chmod(0o755)
+    codex = tmp_path / "codex"
+    codex.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(60)\n")
+    codex.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    shell = AgentShell(
+        AgentType.CODEX,
+        execution_host=TmuxExecutionHost(
+            placement=TmuxPlacement.new_window(session=session_name)
+        ),
+    )
+    interactive = None
+
+    # Act
+    try:
+        interactive = await shell.open_interactive(str(tmp_path))
+        tmux_args = argv_file.read_text().split("\0")
+    finally:
+        if interactive is not None:
+            await interactive.close()
+        cleanup = await asyncio.create_subprocess_exec(
+            real_tmux, "-f", "/dev/null", "kill-session", "-t", session_name,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await cleanup.wait()
+
+    # Assert
+    assert tmux_args[tmux_args.index("-t") + 1] == "=6:"
 
 
 async def test_process_exit_finishes_event_stream_without_claiming_turn_success(

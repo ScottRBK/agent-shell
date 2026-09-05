@@ -27,9 +27,15 @@ def arguments():
     parser.add_argument("--prompt", help="Optional initial prompt (makes a live model request)")
     parser.add_argument("--new-terminal", action="store_true",
                         help="Open a terminal emulator attached to the real tmux session")
+    parser.add_argument("--split-pane", action="store_true",
+                        help="Split beside the current tmux pane; keep focus on the controller")
     args = parser.parse_args()
     if args.model and args.agent == "all":
         parser.error("--model requires a single --agent")
+    if args.split_pane and args.new_terminal:
+        parser.error("--split-pane cannot be combined with --new-terminal")
+    if args.split_pane and args.agent == "all":
+        parser.error("--split-pane requires a single --agent")
     return args
 
 
@@ -63,7 +69,8 @@ async def main(args):
     async with AsyncExitStack() as stack:
         for name in names:
             placement = (
-                TmuxPlacement.new_session() if not sessions
+                TmuxPlacement.split_pane() if args.split_pane
+                else TmuxPlacement.new_session() if not sessions
                 else TmuxPlacement.new_window(next(iter(sessions.values())).terminal.session_name)
             )
             shell = AgentShell(AgentType(name), execution_host=TmuxExecutionHost(placement))
@@ -77,9 +84,12 @@ async def main(args):
 
         target = next(iter(sessions.values())).terminal.session_name
         attach = ["tmux", "attach-session", "-t", target]
-        print("From another terminal: " + shlex.join(attach), flush=True)
-        print("Inside tmux: " + shlex.join(["tmux", "switch-client", "-t", target]), flush=True)
-        print("Use tmux next-window (prefix+n) to move between the real harness UIs.", flush=True)
+        if args.split_pane:
+            print("Use prefix+arrow to move between the controller and agent panes.", flush=True)
+        else:
+            print("From another terminal: " + shlex.join(attach), flush=True)
+            print("Inside tmux: " + shlex.join(["tmux", "switch-client", "-t", target]), flush=True)
+            print("Use prefix+n to move between the real harness windows.", flush=True)
         if args.new_terminal:
             launcher = discover_terminal_launcher()
             await launcher.launch(attach, cwd=args.cwd, env=os.environ.copy())

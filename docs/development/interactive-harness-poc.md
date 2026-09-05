@@ -22,6 +22,18 @@ The controller creates one owned tmux session with a separate window for each ha
 an attach command for another terminal, and a switch-client command for use inside tmux. Move
 between harnesses with tmux's next-window binding (normally prefix+n).
 
+To show one harness beside your current conversation, run inside tmux:
+
+```bash
+uv run python examples/interactive_demo.py --agent pi --split-pane
+```
+
+`--split-pane` creates a side-by-side split and keeps keyboard focus in the controller pane.
+Use prefix+arrow to enter the agent UI. `/quit` in the controller closes only the agent's pane;
+the original pane and its running process stay alive. Exiting the harness retains its screen
+until the controller closes it. Prefix+d detaches the whole tmux client.
+This toggle requires a single `--agent` and cannot be combined with `--new-terminal`.
+
 Keep the controller running. Resolve any login, trust, or permission prompts directly in each
 real UI. Then type into the UI yourself, or send a prompt from the controller:
 
@@ -68,6 +80,12 @@ async with await shell.open_interactive("/path/to/project") as session:
 permission prompts remain enabled. Headless `execute()`, `stream()`, `health_check()`, model
 discovery, and MCP management keep their existing behavior. Interactive operation is a separate
 session API; it does not yet provide every headless option or guaranteed response collection.
+
+For a split, use `TmuxPlacement.split_pane()` in place of `current_session()` above.
+Both headless and interactive launches support it. The target is the caller's `TMUX_PANE`,
+so changing the active pane elsewhere does not redirect the launch. `focus=True` selects the
+new pane immediately; the default keeps the caller focused. It fails clearly outside tmux.
+All seven adapters share this host option without harness-specific changes.
 
 ## Shared architecture
 

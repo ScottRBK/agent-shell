@@ -12,10 +12,11 @@ import shutil
 
 import pytest
 
-from agent_shell import TmuxExecutionHost
+from agent_shell import TmuxExecutionHost, TmuxPlacement
 from agent_shell.models.agent import AgentType
 from agent_shell.shell import AgentShell
 from tests.integration.test_interactive_terminal import isolated_tmux  # noqa: F401
+from tests.integration.test_interactive_terminal import current_tmux_terminal  # noqa: F401
 
 pytestmark = pytest.mark.e2e
 
@@ -27,12 +28,16 @@ HARNESSES = [
 
 
 @pytest.mark.parametrize("agent,binary", HARNESSES, ids=[a.value for a, _ in HARNESSES])
-async def test_real_interactive_prompt(agent, binary, isolated_tmux):
+@pytest.mark.parametrize("split", [False, True], ids=["session", "split"])
+async def test_real_interactive_prompt(
+    agent, binary, isolated_tmux, current_tmux_terminal, split,
+):
     # Arrange: native auth/config and a trusted workspace; unique answer absent from prompt.
     if not shutil.which(binary):
         pytest.skip(f"{binary} is not installed")
     cwd = os.environ.get("AGENTSHELL_E2E_CWD", str(Path(__file__).resolve().parents[2]))
-    shell = AgentShell(agent, execution_host=TmuxExecutionHost())
+    placement = TmuxPlacement.split_pane() if split else TmuxPlacement.new_session()
+    shell = AgentShell(agent, execution_host=TmuxExecutionHost(placement))
     prompt = (
         "Reply only with the concatenation of AGENTSHELL_ and E2E_OK. "
         "Do not use tools or modify files."
@@ -77,6 +82,9 @@ async def test_real_interactive_prompt(agent, binary, isolated_tmux):
             await asyncio.gather(observer, return_exceptions=True)
 
         # Assert: a reply is observed while the actual interactive harness remains alive.
+        if split:
+            assert session.terminal.window_id == current_tmux_terminal.window_id
+            assert session.terminal.pane_id != current_tmux_terminal.pane_id
         assert answer_seen
         assert any(e.session_id for e in events)
         assert not any(e.type == "error" for e in events)
@@ -84,6 +92,8 @@ async def test_real_interactive_prompt(agent, binary, isolated_tmux):
         if "turn_complete" in session.capabilities:
             assert any(e.type == "result" and e.content == "ok" for e in events)
     assert session.terminal.closed
+    assert await isolated_tmux("list-panes", "-t", current_tmux_terminal.window_id,
+                               "-F", "#{pane_id}") == current_tmux_terminal.pane_id
 
 
 async def test_real_cursor_resumes_requested_conversation(isolated_tmux):
