@@ -31,6 +31,7 @@ async def run_health_probe(
         cwd: str,
         model: str | None = None,
         timeout: float = 60.0,
+        *, effort: str | None = None,
 ) -> HealthCheckResult:
     events: list[StreamEvent] = []
 
@@ -39,6 +40,7 @@ async def run_health_probe(
                 cwd=cwd,
                 prompt=HEALTH_PROMPT,
                 model=model,
+                effort=effort,
                 allowed_tools=[],
                 auto_approve=True,
         ):

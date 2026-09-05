@@ -225,3 +225,21 @@ class TestHealthCheckValidation:
         # Act / Assert
         with pytest.raises(ValueError, match="Directory does not exist"):
             await shell.health_check(cwd="/does/not/exist", model="m")
+
+
+async def test_codex_health_check_overrides_inherited_reasoning_effort():
+    # Arrange: the external CLI must receive both parts of the requested model configuration.
+    shell = AgentShell(agent_type=AgentType.CODEX)
+    process = _make_mock_process(HAPPY[AgentType.CODEX])
+
+    # Act
+    with patch("asyncio.create_subprocess_exec", return_value=process) as launch:
+        result = await shell.health_check(
+            cwd="/tmp", model="gpt-5.6-luna", effort="low",
+        )
+
+    # Assert
+    assert result.healthy, result.exception
+    command = launch.call_args.args
+    assert command[command.index("--model") + 1] == "gpt-5.6-luna"
+    assert 'model_reasoning_effort="low"' in command

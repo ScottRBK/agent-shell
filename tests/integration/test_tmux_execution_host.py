@@ -48,11 +48,12 @@ def fake_tmux(monkeypatch, tmp_path):
         "    (registry / session).write_text(str(worker.pid))\n"
         "    raise SystemExit(0)\n"
         "if 'new-window' in args:\n"
-        "    session = args[args.index('-t') + 1]\n"
+        "    session = args[args.index('-t') + 1].removeprefix('=').removesuffix(':')\n"
         "    if not (registry / session).exists():\n"
         "        raise SystemExit(1)\n"
         "    command = args[args.index('--') + 1:]\n"
-        "    window = session + '-window-' + str(os.getpid()) + '-' + str(len(list(registry.iterdir())))\n"
+        "    window = session + '-window-' + str(os.getpid()) + '-' + "
+        "str(len(list(registry.iterdir())))\n"
         "    worker = subprocess.Popen(command, stdin=subprocess.DEVNULL,\n"
         "                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
         "                              start_new_session=True)\n"
@@ -214,6 +215,29 @@ async def test_new_window_placement_borrows_session_and_owns_only_new_window(
     assert borrowed_session.exists()
     assert not list(fake_tmux.glob("borrowed-session-window-*"))
     borrowed_session.unlink()
+
+
+async def test_new_window_placement_exactly_targets_numeric_session(
+    fake_tmux, monkeypatch, tmp_path
+):
+    # Arrange
+    borrowed_session = fake_tmux / "6"
+    borrowed_session.write_text(str(os.getpid()))
+    argv_file = tmp_path / "tmux-argv"
+    monkeypatch.setenv("AGENTSHELL_FAKE_TMUX_ARGV_FILE", str(argv_file))
+    host = TmuxExecutionHost(placement=TmuxPlacement.new_window(session="6"))
+
+    # Act
+    try:
+        run = await host.launch([sys.executable, "-c", "pass"], cwd=str(tmp_path))
+        await run.communicate()
+        tmux_args = argv_file.read_text().split("\0")
+        run.release()
+    finally:
+        borrowed_session.unlink(missing_ok=True)
+
+    # Assert
+    assert tmux_args[tmux_args.index("-t") + 1] == "=6:"
 
 
 async def test_current_session_placement_fails_clearly_outside_tmux(

@@ -1,6 +1,6 @@
 """Real-CLI smoke coverage for the opt-in execution boundary.
 
-Local-only: this uses the authenticated Codex CLI and incurs a small gpt-5.4-mini call per mode.
+Local-only: this uses the authenticated Codex CLI and incurs a small gpt-5.6-luna call per mode.
 """
 
 import asyncio
@@ -284,7 +284,9 @@ async def test_real_codex_health_check_completes_inside_pid_isolation(tmp_path, 
     )
 
     # Act
-    result = await shell.health_check(cwd=str(tmp_path), model="gpt-5.4-mini", timeout=60.0)
+    result = await shell.health_check(
+        cwd=str(tmp_path), model="gpt-5.6-luna", effort="low", timeout=60.0,
+    )
 
     # Assert
     assert result.healthy is True, result.exception
