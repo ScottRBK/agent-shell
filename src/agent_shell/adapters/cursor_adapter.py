@@ -3,6 +3,7 @@ import codecs
 import json
 import logging
 import os
+import shlex
 import warnings
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -34,6 +35,52 @@ logger = logging.getLogger("agent_shell.cursor_adapter")
 
 
 class CursorAdapter:
+    def prepare_interactive(
+        self, directory: Path, *, prompt: str | None, model: str | None,
+        effort: str | None, session_id: str | None, allowed_tools: list[str] | None = None,
+    ):
+        if allowed_tools is not None:
+            raise NotImplementedError(
+                "Interactive allowed_tools is not implemented for this harness"
+            )
+
+        from agent_shell.interactive import InteractiveLaunch, event_writer_command
+
+        if effort:
+            raise ValueError("Cursor effort must be supplied in the native model selector")
+        # Cursor requires at least three non-root components in a local plugin path.
+        plugin = directory / "cursor-plugin"
+        plugin.mkdir()
+        (plugin / ".cursor-plugin").mkdir()
+        (plugin / ".cursor-plugin/plugin.json").write_text(json.dumps({
+            "name": "agentshell-observer", "version": "0.1.0", "hooks": "./hooks/hooks.json",
+        }))
+        (plugin / "hooks").mkdir()
+        command_hook = {"command": shlex.join(event_writer_command(directory))}
+        (plugin / "hooks/hooks.json").write_text(json.dumps({
+            "version": 1, "hooks": {name: [command_hook] for name in (
+                "sessionStart",
+            )},
+        }))
+        command = ["cursor-agent", "--plugin-dir", str(plugin)]
+        if model:
+            command += ["--model", model]
+        if session_id:
+            command += ["--resume=" + session_id]
+        if prompt is not None:
+            command += ["--", prompt]
+        # The installed CLI delivers plugin SessionStart only on new conversations.
+        # It does not deliver turn/response hooks, or SessionStart when resuming.
+        # Advertise only the capability verified against the real interactive harness.
+        capabilities = frozenset() if session_id else frozenset({"session_id"})
+        return InteractiveLaunch(command, self.parse_interactive_event, capabilities)
+
+    def parse_interactive_event(self, event: dict) -> list[StreamEvent]:
+        if event.get("hook_event_name") == "sessionStart":
+            return [StreamEvent(type="system", content="",
+                                session_id=event.get("conversation_id"))]
+        return []
+
     def __init__(
             self,
             execution_host: ExecutionHost | None = None,
@@ -311,8 +358,9 @@ class CursorAdapter:
             cwd: str,
             model: str | None = None,
             timeout: float = 60.0,
+            *, effort: str | None = None,
     ) -> HealthCheckResult:
-        return await run_health_probe(self, cwd, model=model, timeout=timeout)
+        return await run_health_probe(self, cwd, model=model, timeout=timeout, effort=effort)
 
     async def list_models(
             self,

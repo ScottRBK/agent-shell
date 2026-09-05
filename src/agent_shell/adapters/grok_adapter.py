@@ -5,6 +5,7 @@ import logging
 import os
 import tomllib
 import warnings
+from uuid import UUID, uuid4
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -72,6 +73,69 @@ _DISALLOWED_TOOL_MAP = {
 
 
 class GrokAdapter:
+    def prepare_interactive(
+        self, directory: Path, *, prompt: str | None, model: str | None,
+        effort: str | None, session_id: str | None, allowed_tools: list[str] | None = None,
+    ):
+        from agent_shell.interactive import InteractiveLaunch
+
+        # Pin a UUID so discovery cannot pick up another concurrent conversation.
+        selected_id = str(UUID(session_id)) if session_id else str(uuid4())
+        root = Path(os.environ.get("GROK_HOME") or Path.home() / ".grok") / "sessions"
+
+        def event_path() -> Path | None:
+            matches = list(root.glob(f"*/{selected_id}/updates.jsonl"))
+            if len(matches) > 1:
+                raise ValueError("Grok session UUID appears in multiple workspaces")
+            return matches[0] if matches else None
+
+        previous = event_path()
+        offset = previous.stat().st_size if previous else 0
+        command = ["grok", "--resume" if session_id else "--session-id", selected_id]
+        if allowed_tools is not None:
+            if not allowed_tools or any(not name or "," in name for name in allowed_tools):
+                raise ValueError("allowed_tools must contain nonempty native tool names")
+            command += ["--tools", ",".join(allowed_tools)]
+        if model:
+            command += ["--model", model]
+        if effort:
+            command += ["--reasoning-effort", effort]
+        if prompt is not None:
+            command += ["--", prompt]
+
+        def parse(record: dict) -> list[StreamEvent]:
+            params = record.get("params") or {}
+            if params.get("sessionId") != selected_id:
+                return []
+            update = params.get("update") or {}
+            kind = update.get("sessionUpdate")
+            if kind == "agent_message_chunk":
+                content = update.get("content") or {}
+                if content.get("type") == "text":
+                    return [StreamEvent(type="text", content=content.get("text", ""),
+                                        session_id=selected_id)]
+            if kind == "user_message_chunk":
+                return [StreamEvent(type="status", content="turn_started", session_id=selected_id)]
+            if kind == "tool_call":
+                return [StreamEvent(type="tool_use", content=update.get("title", "tool"),
+                                    session_id=selected_id)]
+            if kind == "turn_completed":
+                reason = update.get("stop_reason")
+                usage = update.get("usage") or {}
+                return [StreamEvent(
+                    type="result", content="ok" if reason == "end_turn" else "error",
+                    error=None if reason == "end_turn" else str(reason or "Unknown stop reason"),
+                    session_id=selected_id, output_tokens=int(usage.get("outputTokens") or 0),
+                    duration=(update.get("elapsed_ms") or 0) / 1000,
+                )]
+            return []
+
+        return InteractiveLaunch(
+            command, parse, frozenset({"session_id", "text", "tool_use", "turn_complete",
+                                       "output_tokens", "duration"}),
+            event_path=event_path, event_offset=offset,
+        )
+
     def __init__(
             self,
             execution_host: ExecutionHost | None = None,
@@ -323,8 +387,9 @@ class GrokAdapter:
             cwd: str,
             model: str | None = None,
             timeout: float = 60.0,
+            *, effort: str | None = None,
     ) -> HealthCheckResult:
-        return await run_health_probe(self, cwd, model=model, timeout=timeout)
+        return await run_health_probe(self, cwd, model=model, timeout=timeout, effort=effort)
 
     async def list_models(
             self,

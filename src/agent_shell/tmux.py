@@ -406,6 +406,17 @@ class TmuxExecutionHost:
             raise TypeError("placement must be a TmuxPlacement")
         self.placement = placement
 
+    async def launch_interactive(
+        self, command: list[str], cwd: str, *, env: dict[str, str] | None = None,
+        isolation_policy: IsolationPolicy | None = None,
+    ):
+        """Launch directly on a real terminal (experimental, separate from pipe-based launch)."""
+        from agent_shell.interactive_terminal import TmuxTerminalSession
+
+        return await TmuxTerminalSession.launch(
+            command, cwd, placement=self.placement, env=env, isolation_policy=isolation_policy,
+        )
+
     async def launch(
         self,
         command: list[str],

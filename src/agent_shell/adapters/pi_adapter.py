@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import warnings
+from pathlib import Path
 from typing import AsyncIterator
 
 from agent_shell.adapters.health import run_health_probe
@@ -65,6 +66,82 @@ def _failure_reason(message: dict) -> str:
 
 
 class PiAdapter:
+    def prepare_interactive(
+        self, directory: Path, *, prompt: str | None, model: str | None,
+        effort: str | None, session_id: str | None, allowed_tools: list[str] | None = None,
+    ):
+        if allowed_tools is not None:
+            raise NotImplementedError(
+                "Interactive allowed_tools is not implemented for this harness"
+            )
+
+        from agent_shell.interactive import InteractiveLaunch
+
+        extension = directory / "pi-events.mjs"
+        destination = json.dumps(str(directory / "events.jsonl"))
+        extension.write_text(
+            'import { appendFileSync } from "node:fs";\n'
+            'export default function (pi) {\n'
+            '  for (const type of ["session_start", "agent_start", "message_update",\n'
+            '                      "tool_execution_start", "agent_end", "agent_settled"]) {\n'
+            '    pi.on(type, (event, ctx) => {\n'
+            '      const record = {...event, session_id: ctx.sessionManager.getSessionId()};\n'
+            f'      appendFileSync({destination}, JSON.stringify(record) + "\\n");\n'
+            '    });\n'
+            '  }\n'
+            '}\n'
+        )
+        command = ["pi", "--extension", str(extension)]
+        if session_id:
+            command += ["--session-id", session_id]
+        if model:
+            command += ["--model", model]
+        if effort:
+            command += ["--thinking", effort]
+        if prompt is not None:
+            command += ["--", prompt]
+
+        # State belongs to this session, not the adapter: concurrent sessions cannot mix usage.
+        pending: StreamEvent | None = None
+        tokens = 0
+        cost = 0.0
+
+        def parse(event: dict) -> list[StreamEvent]:
+            nonlocal pending, tokens, cost
+            kind = event.get("type")
+            sid = event.get("session_id")
+            if kind == "session_start":
+                pending, tokens, cost = None, 0, 0.0
+                return [StreamEvent(type="system", content="", session_id=sid)]
+            if kind == "agent_start":
+                return [StreamEvent(type="status", content="turn_started", session_id=sid)]
+            if kind == "agent_end":
+                results = self._parse_event(event, include_thinking=False)
+                pending = next((item for item in results if item.type == "result"), None)
+                if pending is not None:
+                    tokens += pending.output_tokens
+                    cost += pending.cost
+                return []
+            if kind == "agent_settled":
+                if pending is None:
+                    return [StreamEvent(type="error", content="Pi settled without a run result",
+                                        session_id=sid)]
+                pending.output_tokens = tokens
+                pending.cost = cost
+                pending.session_id = sid
+                results = [pending]
+                pending, tokens, cost = None, 0, 0.0
+                return results
+            results = self._parse_event(event, include_thinking=False)
+            for item in results:
+                item.session_id = sid
+            return results
+
+        return InteractiveLaunch(
+            command, parse,
+            frozenset({"text", "session_id", "tool_use", "turn_complete", "output_tokens", "cost"}),
+        )
+
     def __init__(
             self,
             execution_host: ExecutionHost | None = None,
@@ -334,8 +411,9 @@ class PiAdapter:
             cwd: str,
             model: str | None = None,
             timeout: float = 60.0,
+            *, effort: str | None = None,
     ) -> HealthCheckResult:
-        return await run_health_probe(self, cwd, model=model, timeout=timeout)
+        return await run_health_probe(self, cwd, model=model, timeout=timeout, effort=effort)
 
     async def list_models(
             self,

@@ -139,6 +139,60 @@ def _json_rpc_result(response: dict) -> dict:
 
 
 class CopilotCLIAdapter:
+    def prepare_interactive(
+        self, directory: Path, *, prompt: str | None, model: str | None,
+        effort: str | None, session_id: str | None, allowed_tools: list[str] | None = None,
+    ):
+        if allowed_tools is not None:
+            raise NotImplementedError(
+                "Interactive allowed_tools is not implemented for this harness"
+            )
+
+        from agent_shell.interactive import InteractiveLaunch, event_writer_command
+        import shlex
+
+        effort = _normalize_effort(effort)
+        (directory / ".github/plugin").mkdir(parents=True)
+        (directory / ".github/plugin/plugin.json").write_text(json.dumps({
+            "name": "agentshell-observer", "version": "0.1.0",
+        }))
+        (directory / "hooks").mkdir()
+        hook = {"type": "command", "command": shlex.join(event_writer_command(directory))}
+        (directory / "hooks/hooks.json").write_text(json.dumps({
+            "version": 1, "hooks": {name: [hook] for name in (
+                "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "ErrorOccurred",
+            )},
+        }))
+        command = ["copilot", "--no-auto-update", "--plugin-dir", str(directory)]
+        if model:
+            command += ["--model", model]
+        if effort:
+            command += ["--effort", effort]
+        if session_id:
+            command += ["--resume=" + session_id]
+        if prompt is not None:
+            command += ["--interactive", prompt]
+        return InteractiveLaunch(command, self.parse_interactive_event, frozenset({
+            "session_id", "tool_use", "stop_requested",
+        }))
+
+    def parse_interactive_event(self, event: dict) -> list[StreamEvent]:
+        name = event.get("hook_event_name")
+        session_id = event.get("session_id")
+        if name == "SessionStart":
+            return [StreamEvent(type="system", content="", session_id=session_id)]
+        if name == "PostToolUse":
+            return [StreamEvent(type="tool_use", content=event.get("tool_name", "tool"),
+                                session_id=session_id)]
+        # Recoverable errors and Stop gates are observations, not final turn verdicts.
+        if name == "ErrorOccurred":
+            message = (event.get("error") or {}).get("message", "Harness error")
+            return [StreamEvent(type="status", content=message, session_id=session_id)]
+        status = {"UserPromptSubmit": "turn_started", "Stop": "stop_requested"}.get(name)
+        if status:
+            return [StreamEvent(type="status", content=status, session_id=session_id)]
+        return []
+
     def __init__(
             self,
             execution_host: ExecutionHost | None = None,
@@ -389,8 +443,9 @@ class CopilotCLIAdapter:
             cwd: str,
             model: str | None = None,
             timeout: float = 60.0,
+            *, effort: str | None = None,
     ) -> HealthCheckResult:
-        return await run_health_probe(self, cwd, model=model, timeout=timeout)
+        return await run_health_probe(self, cwd, model=model, timeout=timeout, effort=effort)
 
     async def list_models(
             self,

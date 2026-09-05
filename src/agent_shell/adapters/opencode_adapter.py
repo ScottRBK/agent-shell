@@ -44,6 +44,73 @@ _DISALLOWED_TOOL_MAP = {
 
 
 class OpenCodeAdapter():
+    def prepare_interactive(
+        self, directory: Path, *, prompt: str | None, model: str | None,
+        effort: str | None, session_id: str | None, allowed_tools: list[str] | None = None,
+    ):
+        if allowed_tools is not None:
+            raise NotImplementedError(
+                "Interactive allowed_tools is not implemented for this harness"
+            )
+
+        from agent_shell.interactive import InteractiveLaunch
+
+        if effort:
+            raise ValueError("OpenCode interactive CLI has no effort flag")
+        plugin = directory / "opencode-events.mjs"
+        plugin.write_text(
+            'import {appendFileSync} from "node:fs";\n'
+            'export default async () => ({event: async ({event}) => {\n'
+            '  if (event.type.startsWith("session.") || event.type.startsWith("message."))\n'
+            f'    appendFileSync({json.dumps(str(directory / "events.jsonl"))}, '
+            'JSON.stringify(event) + "\\n");\n'
+            '}});\n'
+        )
+        config = json.loads(os.environ.get("OPENCODE_CONFIG_CONTENT") or "{}")
+        config["plugin"] = [*config.get("plugin", []), plugin.as_uri()]
+        command = ["opencode"]
+        if model:
+            command += ["--model", model]
+        if session_id:
+            command += ["--session", session_id]
+        if prompt is not None:
+            command += ["--prompt", prompt]
+        roles: dict[str, str] = {}
+        seen: set[str] = set()
+
+        def parse(event: dict) -> list[StreamEvent]:
+            kind = event.get("type")
+            data = event.get("properties") or {}
+            info = data.get("info") or {}
+            if kind == "session.created":
+                return [StreamEvent(type="system", content="", session_id=info.get("id"))]
+            if kind == "message.updated":
+                roles[info["id"]] = info.get("role", "")
+            if kind == "message.part.updated":
+                part = data.get("part") or {}
+                key = part.get("id")
+                if roles.get(part.get("messageID")) != "assistant" or key in seen:
+                    return []
+                session = part.get("sessionID")
+                if part.get("type") == "text" and (part.get("time") or {}).get("end"):
+                    seen.add(key)
+                    return [StreamEvent(type="text", content=part.get("text", ""),
+                                        session_id=session)]
+                if part.get("type") == "tool":
+                    seen.add(key)
+                    return [StreamEvent(type="tool_use", content=part.get("tool", "tool"),
+                                        session_id=session)]
+            if kind == "session.idle":
+                return [StreamEvent(type="status", content="idle",
+                                    session_id=data.get("sessionID"))]
+            if kind == "session.error":
+                return [StreamEvent(type="status", content=json.dumps(data.get("error")),
+                                    session_id=data.get("sessionID"))]
+            return []
+
+        return InteractiveLaunch(command, parse, frozenset({"session_id", "text", "tool_use"}),
+                                 env={"OPENCODE_CONFIG_CONTENT": json.dumps(config)})
+
     def __init__(
             self,
             execution_host: ExecutionHost | None = None,
@@ -372,8 +439,9 @@ class OpenCodeAdapter():
             cwd: str,
             model: str | None = None,
             timeout: float = 60.0,
+            *, effort: str | None = None,
     ) -> HealthCheckResult:
-        return await run_health_probe(self, cwd, model=model, timeout=timeout)
+        return await run_health_probe(self, cwd, model=model, timeout=timeout, effort=effort)
 
     async def list_models(
             self,

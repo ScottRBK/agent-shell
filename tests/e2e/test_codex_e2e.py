@@ -7,8 +7,8 @@ from agent_shell.models.agent import AgentType, AgentResponse, StreamEvent
 pytestmark = pytest.mark.e2e
 
 
-# Codex E2E uses gpt-5.4-mini explicitly to keep token costs low.
-MODEL = "gpt-5.4-mini"
+# Codex E2E uses gpt-5.6-luna explicitly to keep token costs low.
+MODEL = "gpt-5.6-luna"
 
 
 class TestStreamE2E:
@@ -22,6 +22,7 @@ class TestStreamE2E:
             cwd="/tmp",
             prompt="Reply with exactly the word PONG and nothing else.",
             model=MODEL,
+            effort="low",
         ):
             events.append(event)
 
@@ -45,6 +46,7 @@ class TestExecuteE2E:
             cwd="/tmp",
             prompt="Reply with exactly the word PONG and nothing else.",
             model=MODEL,
+            effort="low",
         )
 
         # Assert
@@ -72,17 +74,20 @@ class TestSessionResumeE2E:
             cwd="/tmp",
             prompt="Reply with just 'OK'.",
             model=MODEL,
+            effort="low",
         )
         resumed = await shell.execute(
             cwd="/tmp",
             prompt="Reply with just 'OK'.",
             model=MODEL,
+            effort="low",
             session_id=first.session_id,
         )
         fresh = await shell.execute(
             cwd="/tmp",
             prompt="Reply with just 'OK'.",
             model=MODEL,
+            effort="low",
         )
 
         # Assert
@@ -104,6 +109,7 @@ class TestDisallowedToolsE2E:
             cwd="/tmp",
             prompt="Reply with exactly the word PONG and nothing else.",
             model=MODEL,
+            effort="low",
             disallowed_tools=["web_search"],
         ):
             events.append(event)
@@ -130,6 +136,7 @@ class TestOutputTokensE2E:
             cwd="/tmp",
             prompt="Write a short paragraph about the sea.",
             model=MODEL,
+            effort="low",
         )
 
         # Assert
