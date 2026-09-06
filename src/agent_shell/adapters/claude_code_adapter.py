@@ -3,6 +3,7 @@ import codecs
 import json
 import logging
 import os
+import shlex
 import warnings
 from pathlib import Path
 from typing import AsyncIterator
@@ -43,6 +44,59 @@ _DISALLOWED_TOOL_MAP = {
 }
 
 class ClaudeCodeAdapter():
+    def prepare_interactive(
+        self, directory: Path, *, prompt: str | None, model: str | None,
+        effort: str | None, session_id: str | None, allowed_tools: list[str] | None = None,
+    ):
+        if allowed_tools is not None:
+            raise NotImplementedError(
+                "Interactive allowed_tools is not implemented for this harness"
+            )
+
+        from agent_shell.interactive import InteractiveLaunch, event_writer_command
+
+        hook = {"type": "command", "command": shlex.join(event_writer_command(directory))}
+        settings = directory / "claude-settings.json"
+        settings.write_text(json.dumps({"hooks": {
+            name: [{"hooks": [hook]}] for name in (
+                "SessionStart", "UserPromptSubmit", "PreToolUse", "Stop",
+            )
+        }}))
+        command = ["claude", "--settings", str(settings)]
+        if session_id:
+            command += ["--resume", session_id]
+        if model:
+            command += ["--model", model]
+        if effort:
+            command += ["--effort", effort]
+        if prompt is not None:
+            command += ["--", prompt]
+        return InteractiveLaunch(
+            command, self.parse_interactive_event,
+            frozenset({"text", "session_id", "stop_requested", "tool_use"}),
+        )
+
+    def parse_interactive_event(self, event: dict) -> list[StreamEvent]:
+        """Observe hooks; Stop is provisional because other hooks may request continuation."""
+        kind = event.get("hook_event_name")
+        session_id = event.get("session_id")
+        if kind == "SessionStart":
+            return [StreamEvent(type="system", content="", session_id=session_id)]
+        if kind == "UserPromptSubmit":
+            return [StreamEvent(type="status", content="turn_started", session_id=session_id)]
+        if kind == "PreToolUse":
+            return [StreamEvent(type="tool_use", content=event.get("tool_name", ""),
+                                session_id=session_id)]
+        if kind == "Stop":
+            events = []
+            text = event.get("last_assistant_message")
+            if text:
+                events.append(StreamEvent(type="text", content=text, session_id=session_id))
+            events.append(StreamEvent(type="status", content="stop_requested",
+                                      session_id=session_id))
+            return events
+        return []
+
     def __init__(
             self,
             execution_host: ExecutionHost | None = None,
@@ -255,8 +309,9 @@ class ClaudeCodeAdapter():
             cwd: str,
             model: str | None = None,
             timeout: float = 60.0,
+            *, effort: str | None = None,
     ) -> HealthCheckResult:
-        return await run_health_probe(self, cwd, model=model, timeout=timeout)
+        return await run_health_probe(self, cwd, model=model, timeout=timeout, effort=effort)
 
     async def list_models(
             self,

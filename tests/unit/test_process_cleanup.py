@@ -70,7 +70,7 @@ class TestGuardianCommands:
         process = _fake_process(pid=12345)
 
         # Act
-        with patch("agent_shell.process_cleanup.os.killpg") as killpg:
+        with patch("os.killpg") as killpg:
             kill_process_group(process)
 
         # Assert

@@ -13,40 +13,16 @@ and cleanup accepts a possible leak rather than risking a signal to a recycled p
 """
 import asyncio
 import atexit
-import contextlib
 import inspect
-import logging
-import os
-import subprocess
-import sys
-from dataclasses import dataclass
 from typing import Protocol
 
-logger = logging.getLogger("agent_shell.process_cleanup")
-
-_KILL_GROUP = b"K"
-_RELEASE_GROUP = b"R"
-
-_GROUP_GUARDIAN = """
-import os
-import signal
-
-command = os.read(0, 1)
-if command == b"R":
-    raise SystemExit(0)
-os.kill(0, signal.SIGKILL)
-"""
-
-
-@dataclass(slots=True)
-class _GroupGuardian:
-    process: subprocess.Popen
-    control_fd: int
-
-    @property
-    def pid(self) -> int:
-        return self.process.pid
-
+from agent_shell.process_guardian import (
+    _GroupGuardian,
+    _KILL_GROUP,
+    _RELEASE_GROUP,
+    _send_guardian_command,
+    _start_guardian,
+)
 
 # Run handles have stable identity even after their numeric PIDs are reaped and reused.
 _guardians: dict[object, _GroupGuardian] = {}
@@ -65,43 +41,6 @@ def transfer_process_guardian(process: object, run_handle: object) -> None:
     """Move exact guardian ownership from a raw process to its public run handle."""
     guardian = _guardians.pop(process)
     _guardians[run_handle] = guardian
-
-
-def _send_guardian_command(guardian: _GroupGuardian, command: bytes) -> None:
-    try:
-        os.write(guardian.control_fd, command)
-    except OSError as error:
-        logger.warning("Could not contact process-group guardian: %s", error)
-    finally:
-        with contextlib.suppress(OSError):
-            os.close(guardian.control_fd)
-
-    # subprocess.Popen, rather than asyncio, owns this direct child. Waiting here reaps that
-    # exact child; the PID is never used to choose a process or group to signal.
-    with contextlib.suppress(OSError, ChildProcessError):
-        guardian.process.wait()
-
-
-def _start_guardian() -> _GroupGuardian:
-    read_fd, write_fd = os.pipe()
-    argv = [sys.executable, "-I", "-S", "-c", _GROUP_GUARDIAN]
-
-    try:
-        process = subprocess.Popen(
-            argv,
-            stdin=read_fd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            process_group=0,
-        )
-    except BaseException:
-        os.close(write_fd)
-        raise
-    finally:
-        os.close(read_fd)
-
-    return _GroupGuardian(process=process, control_fd=write_fd)
 
 
 async def create_grouped_process(

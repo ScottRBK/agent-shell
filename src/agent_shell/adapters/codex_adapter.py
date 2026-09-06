@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import warnings
+from pathlib import Path
 from typing import AsyncIterator
 
 from agent_shell.adapters.health import run_health_probe
@@ -32,6 +33,45 @@ logger = logging.getLogger("agent_shell.codex_adapter")
 
 
 class CodexAdapter:
+    def prepare_interactive(
+        self, directory: Path, *, prompt: str | None, model: str | None,
+        effort: str | None, session_id: str | None, allowed_tools: list[str] | None = None,
+    ):
+        if allowed_tools is not None:
+            raise NotImplementedError(
+                "Interactive allowed_tools is not implemented for this harness"
+            )
+
+        from agent_shell.interactive import InteractiveLaunch, event_writer_command
+
+        command = ["codex"]
+        if session_id:
+            command += ["resume", session_id]
+        # A per-invocation override; the user's config file is never changed.
+        command += ["-c", "notify=" + json.dumps(event_writer_command(directory))]
+        if model:
+            command += ["--model", model]
+        if effort:
+            command += ["-c", "model_reasoning_effort=" + json.dumps(effort)]
+        if prompt is not None:
+            command += ["--", prompt]
+        return InteractiveLaunch(
+            command, self.parse_interactive_event,
+            frozenset({"text", "session_id", "turn_complete"}),
+        )
+
+    def parse_interactive_event(self, event: dict) -> list[StreamEvent]:
+        """Normalize Codex's after-turn notification, without guessing usage or failures."""
+        if event.get("type") != "agent-turn-complete":
+            return []
+        session_id = event.get("thread-id")
+        events = [StreamEvent(type="system", content="", session_id=session_id)]
+        text = event.get("last-assistant-message")
+        if text:
+            events.append(StreamEvent(type="text", content=text, session_id=session_id))
+        events.append(StreamEvent(type="result", content="ok", session_id=session_id))
+        return events
+
     def __init__(
             self,
             execution_host: ExecutionHost | None = None,
@@ -308,8 +348,9 @@ class CodexAdapter:
             cwd: str,
             model: str | None = None,
             timeout: float = 60.0,
+            *, effort: str | None = None,
     ) -> HealthCheckResult:
-        return await run_health_probe(self, cwd, model=model, timeout=timeout)
+        return await run_health_probe(self, cwd, model=model, timeout=timeout, effort=effort)
 
     async def list_models(
             self,

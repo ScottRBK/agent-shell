@@ -17,7 +17,7 @@ pytestmark = pytest.mark.e2e
 VALID_MODEL = {
     AgentType.CLAUDE_CODE: "haiku",
     AgentType.OPENCODE: "opencode/big-pickle",
-    AgentType.CODEX: "gpt-5.4-mini",
+    AgentType.CODEX: "gpt-5.6-luna",
     AgentType.COPILOT_CLI: "auto",
     AgentType.PI: "openai-codex/gpt-5.4-mini",
     AgentType.CURSOR: "auto",
@@ -34,7 +34,10 @@ class TestHealthyE2E:
         shell = AgentShell(agent_type=agent_type)
 
         # Act
-        result = await shell.health_check(cwd="/tmp", model=VALID_MODEL[agent_type])
+        result = await shell.health_check(
+            cwd="/tmp", model=VALID_MODEL[agent_type],
+            effort="low" if agent_type == AgentType.CODEX else None,
+        )
 
         # Assert
         assert isinstance(result, HealthCheckResult)
@@ -49,7 +52,10 @@ class TestUnhealthyE2E:
         shell = AgentShell(agent_type=agent_type)
 
         # Act
-        result = await shell.health_check(cwd="/tmp", model=BOGUS_MODEL)
+        result = await shell.health_check(
+            cwd="/tmp", model=BOGUS_MODEL,
+            effort="low" if agent_type == AgentType.CODEX else None,
+        )
 
         # Assert — every CLI's bad-model path must resolve to unhealthy, despite
         # opencode exiting 0 and copilot/pi reporting only on stderr.

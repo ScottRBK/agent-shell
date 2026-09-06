@@ -26,6 +26,7 @@ def fake_tmux(monkeypatch, tmp_path):
     """Replace the external tmux boundary while keeping the real bridge process and IPC."""
     registry = tmp_path / "tmux-registry"
     registry.mkdir()
+    (tmp_path / "tmux-commands").mkdir()
     bin_dir = tmp_path / "tmux-bin"
     bin_dir.mkdir()
     fake = bin_dir / "tmux"
@@ -46,45 +47,45 @@ def fake_tmux(monkeypatch, tmp_path):
         "                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
         "                              start_new_session=True)\n"
         "    (registry / session).write_text(str(worker.pid))\n"
+        "    (registry.parent / 'tmux-commands' / str(worker.pid)).write_text(' '.join(command))\n"
+        "    print(f'${worker.pid}\\t@{worker.pid}\\t%{worker.pid}\\t/fake/socket')\n"
         "    raise SystemExit(0)\n"
         "if 'new-window' in args:\n"
-        "    session = args[args.index('-t') + 1]\n"
+        "    session = args[args.index('-t') + 1].removeprefix('=').removesuffix(':')\n"
         "    if not (registry / session).exists():\n"
         "        raise SystemExit(1)\n"
         "    command = args[args.index('--') + 1:]\n"
-        "    window = session + '-window-' + str(os.getpid()) + '-' + str(len(list(registry.iterdir())))\n"
+        "    window = session + '-window-' + str(os.getpid()) + '-' + "
+        "str(len(list(registry.iterdir())))\n"
         "    worker = subprocess.Popen(command, stdin=subprocess.DEVNULL,\n"
         "                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
         "                              start_new_session=True)\n"
         "    (registry / window).write_text(str(worker.pid))\n"
+        "    (registry.parent / 'tmux-commands' / str(worker.pid)).write_text(' '.join(command))\n"
         "    argv_file = os.environ.get('AGENTSHELL_FAKE_TMUX_ARGV_FILE')\n"
         "    if argv_file:\n"
         "        pathlib.Path(argv_file).write_text('\\0'.join(args))\n"
         "    if os.environ.get('AGENTSHELL_FAKE_TMUX_EMPTY_WINDOW_ID'):\n"
         "        print('', flush=True)\n"
         "    else:\n"
-        "        print(window, flush=True)\n"
+        "        print(f'${worker.pid}\\t@{worker.pid}\\t%{worker.pid}\\t/fake/socket')\n"
         "    raise SystemExit(0)\n"
         "if 'display-message' in args:\n"
         "    print(os.environ.get('AGENTSHELL_FAKE_TMUX_CURRENT_SESSION', ''))\n"
         "    raise SystemExit(0)\n"
-        "if 'kill-session' in args:\n"
-        "    session = args[args.index('-t') + 1]\n"
-        "    marker = registry / session\n"
-        "    try:\n"
-        "        os.kill(int(marker.read_text()), signal.SIGKILL)\n"
-        "    except (FileNotFoundError, ProcessLookupError, ValueError):\n"
-        "        pass\n"
-        "    marker.unlink(missing_ok=True)\n"
-        "    raise SystemExit(0)\n"
-        "if 'kill-window' in args:\n"
-        "    window = args[args.index('-t') + 1]\n"
-        "    marker = registry / window\n"
-        "    try:\n"
-        "        os.kill(int(marker.read_text()), signal.SIGKILL)\n"
-        "    except (FileNotFoundError, ProcessLookupError, ValueError):\n"
-        "        pass\n"
-        "    marker.unlink(missing_ok=True)\n"
+        "if 'if-shell' in args:\n"
+        "    pid = args[args.index('-t') + 1].removeprefix('%')\n"
+        "    condition = args[args.index('-t') + 2]\n"
+        "    token = condition.split('*')[1]\n"
+        "    command = registry.parent / 'tmux-commands' / pid\n"
+        "    if command.exists() and token in command.read_text():\n"
+        "        for marker in registry.iterdir():\n"
+        "            if marker.read_text() == pid:\n"
+        "                try:\n"
+        "                    os.kill(int(pid), signal.SIGKILL)\n"
+        "                except ProcessLookupError:\n"
+        "                    pass\n"
+        "                marker.unlink()\n"
         "    raise SystemExit(0)\n"
         "if 'list-panes' in args:\n"
         "    for marker in sorted(registry.iterdir()):\n"
@@ -216,6 +217,29 @@ async def test_new_window_placement_borrows_session_and_owns_only_new_window(
     borrowed_session.unlink()
 
 
+async def test_new_window_placement_exactly_targets_numeric_session(
+    fake_tmux, monkeypatch, tmp_path
+):
+    # Arrange
+    borrowed_session = fake_tmux / "6"
+    borrowed_session.write_text(str(os.getpid()))
+    argv_file = tmp_path / "tmux-argv"
+    monkeypatch.setenv("AGENTSHELL_FAKE_TMUX_ARGV_FILE", str(argv_file))
+    host = TmuxExecutionHost(placement=TmuxPlacement.new_window(session="6"))
+
+    # Act
+    try:
+        run = await host.launch([sys.executable, "-c", "pass"], cwd=str(tmp_path))
+        await run.communicate()
+        tmux_args = argv_file.read_text().split("\0")
+        run.release()
+    finally:
+        borrowed_session.unlink(missing_ok=True)
+
+    # Assert
+    assert tmux_args[tmux_args.index("-t") + 1] == "=6:"
+
+
 async def test_current_session_placement_fails_clearly_outside_tmux(
     monkeypatch, tmp_path
 ):
@@ -325,7 +349,7 @@ async def test_unidentifiable_new_window_preserves_borrowed_session(
 
     # Act / Assert
     try:
-        with pytest.raises(TmuxUnavailableError, match="window id"):
+        with pytest.raises(TmuxUnavailableError, match="valid session, window, pane"):
             await host.launch([sys.executable, "-c", "pass"], cwd=str(tmp_path))
         assert borrowed_session.exists()
     finally:

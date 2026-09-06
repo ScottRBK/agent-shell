@@ -45,6 +45,7 @@ class AgentAdapter(Protocol):
             cwd: str,
             model: str | None = None,
             timeout: float = 60.0,
+            *, effort: str | None = None,
     ) -> HealthCheckResult:
         ...
 

@@ -84,6 +84,32 @@ class AgentShell():
             isolation_policy=self.isolation_policy,
         )
 
+    async def open_interactive(
+        self, cwd: str, *, prompt: str | None = None, model: str | None = None,
+        effort: str | None = None, session_id: str | None = None,
+        allowed_tools: list[str] | None = None,
+    ):
+        """Open the real harness UI (experimental). The caller owns the returned session.
+
+        Requires an interactive-capable host and adapter. Native harness permission prompts
+        remain enabled. Structured feature support is exposed by session.capabilities.
+        """
+        from agent_shell.interactive import (
+            InteractiveAdapter, InteractiveExecutionHost, open_interactive_session,
+        )
+
+        if not Path(cwd).is_dir():
+            raise ValueError(f"Directory does not exist: {cwd}")
+        if not isinstance(self._adapter, InteractiveAdapter):
+            raise NotImplementedError("This adapter does not support interactive sessions")
+        if not isinstance(self.execution_host, InteractiveExecutionHost):
+            raise NotImplementedError("This execution host does not support interactive sessions")
+        return await open_interactive_session(
+            self._adapter, self.execution_host, self.isolation_policy, cwd,
+            prompt=prompt, model=model, effort=effort,
+            session_id=session_id, allowed_tools=allowed_tools,
+        )
+
     async def execute(
             self,
             cwd: str,
@@ -154,12 +180,13 @@ class AgentShell():
             cwd: str,
             model: str | None = None,
             timeout: float = 60.0,
+            *, effort: str | None = None,
     ) -> HealthCheckResult:
 
         if not Path(cwd).is_dir():
             raise ValueError(f"Directory does not exist: {cwd}")
 
-        return await self._adapter.health_check(cwd=cwd, model=model, timeout=timeout)
+        return await self._adapter.health_check(cwd=cwd, model=model, timeout=timeout, effort=effort)
 
     async def list_models(
             self,

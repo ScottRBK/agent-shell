@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from agent_shell import tmux_protocol
+from agent_shell.tmux_ownership import IDENTITY_FORMAT, TmuxResource
 from agent_shell.execution import (
     IsolationPolicy,
     IsolationUnavailableError,
@@ -37,12 +38,14 @@ class TmuxPlacement:
 
     Placement is deliberately separate from cleanup ownership.  A ``new-session`` placement
     creates a session that the resulting run owns, while a ``new-window`` placement borrows the
-    named session and owns only the window created for that run.
+    named session and owns only the window created for that run. A ``split-pane`` placement
+    borrows the caller's window and owns only its new pane.
     """
 
-    _kind: Literal["new-session", "new-window", "current-window"]
+    _kind: Literal["new-session", "new-window", "current-window", "split-pane"]
     _session_name: str | None = None
     _focus: bool = False
+    _direction: Literal["right", "down"] = "right"
 
     @classmethod
     def new_session(cls, name: str | None = None) -> TmuxPlacement:
@@ -78,9 +81,28 @@ class TmuxPlacement:
         return cls(_kind="current-window", _focus=focus)
 
     @property
-    def kind(self) -> Literal["new-session", "new-window", "current-window"]:
+    def kind(self) -> Literal["new-session", "new-window", "current-window", "split-pane"]:
         """The resource creation operation represented by this placement."""
         return self._kind
+
+    @classmethod
+    def split_pane(
+        cls, focus: bool = False, *, direction: Literal["right", "down"] = "right",
+    ) -> TmuxPlacement:
+        """Split right of or below the caller's TMUX_PANE, owning only the new pane.
+
+        By default keyboard focus stays with the caller. Requires running inside tmux.
+        """
+        if not isinstance(focus, bool):
+            raise TypeError("focus must be a bool")
+        if direction not in ("right", "down"):
+            raise ValueError("direction must be 'right' or 'down'")
+        return cls(_kind="split-pane", _focus=focus, _direction=direction)
+
+    @property
+    def direction(self) -> Literal["right", "down"]:
+        """Where a split pane is placed relative to the caller's pane."""
+        return self._direction
 
     @property
     def session(self) -> str | None:
@@ -89,7 +111,7 @@ class TmuxPlacement:
 
     @property
     def focus(self) -> bool:
-        """Whether a newly-created window should become the active window."""
+        """Whether the newly created window or pane should receive focus."""
         return self._focus
 
 
@@ -102,6 +124,11 @@ def _validate_tmux_name(value: str, description: str) -> None:
         raise ValueError(
             f"{description} must be a non-empty session name without target separators"
         )
+
+
+def _tmux_exact_session_target(session_name: str) -> str:
+    """Format a borrowed session name so tmux matches the session exactly."""
+    return f"={session_name}:"
 
 
 async def _tmux_receive_frame(reader: asyncio.StreamReader) -> tuple[int, bytes]:
@@ -132,9 +159,7 @@ class _TmuxRunHandle:
         self,
         *,
         tmux_path: str,
-        resource_kind: Literal["session", "window"],
-        session_name: str,
-        window_id: str | None,
+        resource: TmuxResource,
         run_directory: str,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
@@ -142,9 +167,7 @@ class _TmuxRunHandle:
         stdin_pipe: bool,
     ):
         self._tmux_path = tmux_path
-        self._resource_kind = resource_kind
-        self._session_name = session_name
-        self._window_id = window_id
+        self._resource = resource
         self._run_directory = run_directory
         self._reader = reader
         self._writer = writer
@@ -274,22 +297,16 @@ class _TmuxRunHandle:
             _TMUX_ACTIVE_RUNS.discard(self)
 
     def _cleanup_resource(self) -> None:
-        if self._resource_kind == "session":
-            _tmux_kill_session(self._tmux_path, self._session_name)
-        elif self._window_id:
-            _tmux_kill_window(self._tmux_path, self._window_id)
+        _cleanup_tmux_resource(self._tmux_path, self._resource)
 
 
-def _cleanup_tmux_resource(
-    tmux_path: str,
-    resource_kind: Literal["session", "window"],
-    session_name: str,
-    window_id: str | None,
-) -> None:
-    if resource_kind == "session":
-        _tmux_kill_session(tmux_path, session_name)
-    elif window_id:
-        _tmux_kill_window(tmux_path, window_id)
+def _cleanup_tmux_resource(tmux_path: str, resource: TmuxResource) -> None:
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        subprocess.run(
+            [tmux_path, "-f", "/dev/null", *resource.cleanup_args()],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=2.0,
+        )
 
 
 class _TmuxStdin:
@@ -323,30 +340,6 @@ class _TmuxStdin:
 
     async def wait_closed(self) -> None:
         await self.drain()
-
-
-def _tmux_kill_session(tmux_path: str, session_name: str) -> None:
-    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
-        subprocess.run(
-            [tmux_path, "-f", "/dev/null", "kill-session", "-t", session_name],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=2.0,
-        )
-
-
-def _tmux_kill_window(tmux_path: str, window_id: str) -> None:
-    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
-        subprocess.run(
-            [tmux_path, "-f", "/dev/null", "kill-window", "-t", window_id],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=2.0,
-        )
 
 
 async def _tmux_current_session(tmux_path: str) -> str:
@@ -390,7 +383,7 @@ async def _tmux_current_session(tmux_path: str) -> str:
 
 
 class TmuxExecutionHost:
-    """Run one command in an AgentShell-owned tmux session or window.
+    """Run one command in an AgentShell-owned tmux session, window, or pane.
 
     .. warning::
        This execution host is experimental. Its placement and lifecycle contract may change in a
@@ -405,6 +398,17 @@ class TmuxExecutionHost:
         if placement is not None and not isinstance(placement, TmuxPlacement):
             raise TypeError("placement must be a TmuxPlacement")
         self.placement = placement
+
+    async def launch_interactive(
+        self, command: list[str], cwd: str, *, env: dict[str, str] | None = None,
+        isolation_policy: IsolationPolicy | None = None,
+    ):
+        """Launch directly on a real terminal (experimental, separate from pipe-based launch)."""
+        from agent_shell.interactive_terminal import TmuxTerminalSession
+
+        return await TmuxTerminalSession.launch(
+            command, cwd, placement=self.placement, env=env, isolation_policy=isolation_policy,
+        )
 
     async def launch(
         self,
@@ -434,17 +438,18 @@ class TmuxExecutionHost:
 
         prepared = await policy.prepare(command, env)
         placement = self.placement or TmuxPlacement.new_session()
-        if placement.kind == "current-window":
+        if placement.kind in {"current-window", "split-pane"}:
             session_name = await _tmux_current_session(tmux_path)
         else:
             session_name = placement.session or f"agentshell-{uuid.uuid4().hex}"
         run_directory = tempfile.mkdtemp(prefix="agentshell-tmux-")
         socket_path = os.path.join(run_directory, "bridge.sock")
-        window_id: str | None = None
-        resource_kind: Literal["session", "window"] = (
-            "session" if placement.kind == "new-session" else "window"
+        resource: TmuxResource | None = None
+        resource_kind: Literal["session", "window", "pane"] = (
+            "session" if placement.kind == "new-session"
+            else "pane" if placement.kind == "split-pane" else "window"
         )
-        resource_label = "session" if resource_kind == "session" else "window"
+        resource_label = resource_kind
         connection: asyncio.Future[tuple[asyncio.StreamReader, asyncio.StreamWriter]] = (
             asyncio.get_running_loop().create_future()
         )
@@ -461,7 +466,6 @@ class TmuxExecutionHost:
             connection.set_result((reader, writer))
 
         server: asyncio.Server | None = None
-        resource_created = False
         try:
             server = await asyncio.start_unix_server(accept_connection, path=socket_path)
             tmux_command = [tmux_path, "-f", "/dev/null"]
@@ -474,19 +478,25 @@ class TmuxExecutionHost:
                         session_name,
                         "-P",
                         "-F",
-                        "#{pane_id}",
+                        IDENTITY_FORMAT,
                     ]
                 )
+            elif placement.kind == "split-pane":
+                tmux_command.extend([
+                    "split-window", "-h" if placement.direction == "right" else "-v",
+                    *([] if placement.focus else ["-d"]),
+                    "-t", os.environ["TMUX_PANE"], "-P", "-F", IDENTITY_FORMAT,
+                ])
             else:
                 tmux_command.extend(
                     [
                         "new-window",
                         *([] if placement.focus else ["-d"]),
                         "-t",
-                        session_name,
+                        _tmux_exact_session_target(session_name),
                         "-P",
                         "-F",
-                        "#{window_id}",
+                        IDENTITY_FORMAT,
                     ]
                 )
             tmux_command.extend(
@@ -521,13 +531,12 @@ class TmuxExecutionHost:
                 raise TmuxUnavailableError(
                     f"tmux could not create the AgentShell {resource_label}{suffix}"
                 )
-            resource_created = True
-            if placement.kind != "new-session":
-                window_id = stdout.decode("utf-8", errors="replace").strip()
-                if not window_id:
-                    raise TmuxUnavailableError(
-                        "tmux created a run window but did not report its window id"
-                    )
+            try:
+                resource = TmuxResource.from_identity(
+                    resource_kind, stdout.decode("utf-8", errors="replace"), run_directory,
+                )
+            except ValueError as error:
+                raise TmuxUnavailableError(str(error)) from error
 
             reader, writer = await asyncio.wait_for(connection, timeout=5.0)
             channel, payload = await asyncio.wait_for(
@@ -551,9 +560,7 @@ class TmuxExecutionHost:
             await _tmux_send_frame(writer, tmux_protocol.CONFIG, config)
             run_handle = _TmuxRunHandle(
                 tmux_path=tmux_path,
-                resource_kind=resource_kind,
-                session_name=session_name,
-                window_id=window_id,
+                resource=resource,
                 run_directory=run_directory,
                 reader=reader,
                 writer=writer,
@@ -578,10 +585,8 @@ class TmuxExecutionHost:
             if server is not None:
                 server.close()
             if not handed_off:
-                if resource_created:
-                    _cleanup_tmux_resource(
-                        tmux_path, resource_kind, session_name, window_id
-                    )
+                if resource is not None:
+                    _cleanup_tmux_resource(tmux_path, resource)
                 shutil.rmtree(run_directory, ignore_errors=True)
 
 
