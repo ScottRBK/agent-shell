@@ -23,6 +23,7 @@ from agent_shell.models.agent import (
     AgentType,
     HealthCheckResult,
     MCPServerSpec,
+    PackageSpec,
     StreamEvent,
 )
 
@@ -206,3 +207,15 @@ class AgentShell():
 
     async def list_mcp_servers(self) -> list[MCPServerSpec]:
         return await self._adapter.list_mcp_servers()
+
+    async def list_packages(self) -> list[PackageSpec]:
+        """List configured user-scope packages, not individual loaded resources."""
+        return await self._adapter.list_packages()
+
+    async def add_package(self, package: PackageSpec, *, timeout: float = 120.0) -> None:
+        """Install/register a user-scope package for subsequent agent runs."""
+        await self._adapter.add_package(package, timeout=timeout)
+
+    async def remove_package(self, source: str, *, timeout: float = 120.0) -> None:
+        """Remove a user-scope package using its harness-native source or identity."""
+        await self._adapter.remove_package(source, timeout=timeout)

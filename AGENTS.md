@@ -17,6 +17,9 @@ classDiagram
         +add_mcp_server(spec) None
         +remove_mcp_server(name) None
         +list_mcp_servers() list~MCPServerSpec~
+        +add_package(spec, timeout) None
+        +list_packages() list~PackageSpec~
+        +remove_package(source, timeout) None
     }
 
     class AgentAdapter {
@@ -29,6 +32,9 @@ classDiagram
         +add_mcp_server(spec) None
         +remove_mcp_server(name) None
         +list_mcp_servers() list~MCPServerSpec~
+        +add_package(spec, timeout) None
+        +list_packages() list~PackageSpec~
+        +remove_package(source, timeout) None
     }
 
     class ClaudeCodeAdapter {
@@ -264,8 +270,12 @@ entries from `~/.claude.json` directly, avoiding the health checks and human-rea
 `claude mcp list`. Cursor manages user-scope MCP entries directly in `~/.cursor/mcp.json` because
 its `mcp` subcommands have no add/remove commands. Grok listing reads user-scope `mcp_servers`
 entries from `~/.grok/config.toml` directly for the same reason. Pi's MCP add/remove/list methods
-raise `NotImplementedError`. Pi manages capability via `pi install` extensions, which needs
-investigation before wiring up.
+raise `NotImplementedError`.
+
+## Package Management
+
+See [package management](docs/development/package_management.md) for the API, Pi behaviour,
+scope, and validation details.
 
 ## Test Philosophy
 

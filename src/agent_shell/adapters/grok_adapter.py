@@ -25,6 +25,7 @@ from agent_shell.models.agent import (
     AgentResponse,
     HealthCheckResult,
     MCPServerSpec,
+    PackageSpec,
     MCPServerType,
     StreamEvent,
 )
@@ -426,6 +427,15 @@ class GrokAdapter:
         if not in_list:
             raise RuntimeError("Unexpected `grok models` output")
         return models
+
+    async def add_package(self, package: PackageSpec, *, timeout: float = 120.0) -> None:
+        raise NotImplementedError("add_package is not supported for Grok")
+
+    async def list_packages(self) -> list[PackageSpec]:
+        raise NotImplementedError("list_packages is not supported for Grok")
+
+    async def remove_package(self, source: str, *, timeout: float = 120.0) -> None:
+        raise NotImplementedError("remove_package is not supported for Grok")
 
     async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None:
         # `grok mcp add` is already add-or-update for the chosen scope. Do NOT pre-remove:

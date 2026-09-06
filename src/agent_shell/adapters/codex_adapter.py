@@ -22,6 +22,7 @@ from agent_shell.models.agent import (
     AgentResponse,
     HealthCheckResult,
     MCPServerSpec,
+    PackageSpec,
     MCPServerType,
     StreamEvent,
 )
@@ -389,6 +390,15 @@ class CodexAdapter:
                 raise RuntimeError("`codex debug models` returned an invalid model entry")
             visible_models.append(slug)
         return visible_models
+
+    async def add_package(self, package: PackageSpec, *, timeout: float = 120.0) -> None:
+        raise NotImplementedError("add_package is not supported for Codex")
+
+    async def list_packages(self) -> list[PackageSpec]:
+        raise NotImplementedError("list_packages is not supported for Codex")
+
+    async def remove_package(self, source: str, *, timeout: float = 120.0) -> None:
+        raise NotImplementedError("remove_package is not supported for Codex")
 
     async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None:
         if mcp_server.type == MCPServerType.STDIO:

@@ -79,6 +79,18 @@ class HealthCheckResult:
     healthy: bool
     exception: str | None = None
 
+
+@dataclass(frozen=True)
+class PackageSpec:
+    """A harness-native package source; supported formats depend on the adapter."""
+
+    source: str
+
+    def __post_init__(self):
+        if not isinstance(self.source, str) or not self.source.strip() or "\x00" in self.source:
+            raise ValueError("Package source must be nonempty text without NUL characters")
+
+
 @dataclass
 class MCPServerSpec:
     name: str
