@@ -13,6 +13,7 @@ import tempfile
 import uuid
 
 from agent_shell.execution import IsolationPolicy, IsolationUnavailableError, NoIsolation
+from agent_shell.tmux_ownership import IDENTITY_FORMAT, TmuxResource
 from agent_shell.tmux import (
     TmuxPlacement,
     TmuxUnavailableError,
@@ -33,7 +34,7 @@ class TmuxTerminalSession:
         self._directory = directory
         self._environment = os.environ.copy()
         self._input_lock = asyncio.Lock()
-        self._resource: tuple[str, str] | None = None
+        self._resource: TmuxResource | None = None
         self.pane_id = ""
         self.window_id = ""
         self.session_name = ""
@@ -84,17 +85,17 @@ class TmuxTerminalSession:
                 args = ["new-window", "-t", _tmux_exact_session_target(session)]
                 if not placement.focus:
                     args.append("-d")
-            args += ["-P", "-F", "#{pane_id} #{window_id}", "--",
+            args += ["-P", "-F", IDENTITY_FORMAT, "--",
                      sys.executable, worker, str(directory)]
-            identity = (await terminal._command(*args)).strip().split()
-            if len(identity) != 2 or not identity[0].startswith("%"):
-                raise TmuxUnavailableError("tmux did not return an interactive pane ID")
-            terminal.pane_id, terminal.window_id = identity
-            terminal._resource = (
-                ("kill-session", session) if placement.kind == "new-session"
-                else ("kill-pane", terminal.pane_id) if placement.kind == "split-pane"
-                else ("kill-window", terminal.window_id)
-            )
+            identity = await terminal._command(*args)
+            kind = ("session" if placement.kind == "new-session"
+                    else "pane" if placement.kind == "split-pane" else "window")
+            try:
+                terminal._resource = TmuxResource.from_identity(kind, identity, directory)
+            except ValueError as error:
+                raise TmuxUnavailableError(str(error)) from error
+            terminal.pane_id = terminal._resource.pane_id
+            terminal.window_id = terminal._resource.window_id
             (directory / "start").touch()
             async with asyncio.timeout(5):
                 while not (status := terminal._status()):
@@ -110,7 +111,9 @@ class TmuxTerminalSession:
 
     async def _command(self, *args: str, data: bytes | None = None) -> str:
         process = await asyncio.create_subprocess_exec(
-            self._tmux, "-f", "/dev/null", *args, env=self._environment,
+            self._tmux, "-f", "/dev/null",
+            *(["-S", self._resource.socket_path] if self._resource else []),
+            *args, env=self._environment,
             stdin=asyncio.subprocess.PIPE if data is not None else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
@@ -189,7 +192,7 @@ class TmuxTerminalSession:
         self._check_open()
         if type(columns) is not int or type(rows) is not int or min(columns, rows) < 2:
             raise ValueError("Terminal dimensions must be integers of at least 2")
-        split = self._resource == ("kill-pane", self.pane_id)
+        split = self._resource is not None and self._resource.kind == "pane"
         await self._command("resize-pane" if split else "resize-window",
                             "-t", self.pane_id if split else self.window_id,
                             "-x", str(columns), "-y", str(rows))
@@ -205,17 +208,19 @@ class TmuxTerminalSession:
             return
         try:
             self.returncode = self._status().get("returncode", self.returncode)
-            if self.pid and self.returncode is None and not self._lost:
+            if self.pid and not self._lost and self._directory.exists():
                 (self._directory / "stop").touch()
                 with contextlib.suppress(TimeoutError):
                     async with asyncio.timeout(2):
-                        while self.returncode is None:
-                            self.returncode = self._status().get("returncode")
+                        while True:
+                            status = self._status()
+                            self.returncode = status.get("returncode", self.returncode)
+                            if status.get("stopped"):
+                                break
                             await asyncio.sleep(0.02)
             if self._resource:
-                operation, target = self._resource
                 with contextlib.suppress(TmuxUnavailableError, TimeoutError, OSError):
-                    await self._command(operation, "-t", target)
+                    await self._command(*self._resource.cleanup_args())
         finally:
             # Releasing the FIFO lets the worker clean up even when tmux control has failed.
             os.close(self._owner_fd)

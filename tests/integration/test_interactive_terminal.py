@@ -1,6 +1,7 @@
 """Real terminal behavior through the execution host's public interactive boundary."""
 
 import asyncio
+import fcntl
 import os
 import shutil
 import sys
@@ -135,6 +136,7 @@ async def test_failed_split_launch_preserves_original_pane(
     from agent_shell import TmuxUnavailableError
     original = current_tmux_terminal
     host = TmuxExecutionHost(TmuxPlacement.split_pane())
+    await isolated_tmux("set-option", "-w", "-t", original.window_id, "remain-on-exit", "on")
 
     # Act
     with pytest.raises(TmuxUnavailableError, match="No such file"):
@@ -421,6 +423,168 @@ asyncio.run(main())
     assert probe.returncode != 0
 
 
+@pytest.mark.parametrize("interruption", ["death", "cancel", "bad-receipt"])
+async def test_interrupted_startup_removes_pane_with_remain_on_exit(
+    current_tmux_terminal, isolated_tmux, tmp_path, interruption,
+):
+    # Arrange: delay only the external tmux launch receipt, after the pane exists.
+    original = current_tmux_terminal
+    await isolated_tmux("set-option", "-w", "-t", original.window_id, "remain-on-exit", "on")
+    tmux = shutil.which("tmux")
+    receipt = tmp_path / "receipt"
+    wrapper = tmp_path / "tmux"
+    wrapper.write_text(
+        f"#!{sys.executable}\nimport pathlib, subprocess, sys, time\n"
+        f"result = subprocess.run([{tmux!r}, *sys.argv[1:]], capture_output=True)\n"
+        "if 'split-window' in sys.argv and result.returncode == 0:\n"
+        f"    pathlib.Path({str(receipt)!r}).write_bytes(result.stdout)\n"
+        "    time.sleep(1)\n"
+        f"    if {interruption!r} == 'bad-receipt': result.stdout = b'bad receipt'\n"
+        "sys.stdout.buffer.write(result.stdout)\n"
+        "sys.stderr.buffer.write(result.stderr)\n"
+        "raise SystemExit(result.returncode)\n"
+    )
+    wrapper.chmod(0o755)
+    code = '''
+import asyncio, os, sys
+from pathlib import Path
+from agent_shell import TmuxExecutionHost, TmuxPlacement, TmuxUnavailableError
+async def main():
+    task = asyncio.create_task(TmuxExecutionHost(TmuxPlacement.split_pane()).launch_interactive(
+        [sys.executable, '-c', 'input()'], sys.argv[1]))
+    async with asyncio.timeout(5):
+        while not Path(sys.argv[2]).exists():
+            await asyncio.sleep(0.01)
+    if sys.argv[3] == 'death':
+        os._exit(0)
+    if sys.argv[3] == 'cancel':
+        task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, TmuxUnavailableError):
+        pass
+    else:
+        raise AssertionError('launch unexpectedly succeeded')
+asyncio.run(main())
+'''
+    env = dict(os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}")
+
+    # Act
+    owner = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", code, str(tmp_path), str(receipt), interruption, env=env,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, stderr = await asyncio.wait_for(owner.communicate(), 8)
+        assert owner.returncode == 0, stderr.decode()
+
+        # Assert: inherited remain-on-exit must not leave a dead split behind.
+        async with asyncio.timeout(3):
+            while await isolated_tmux("list-panes", "-t", original.window_id,
+                                     "-F", "#{pane_id}") != original.pane_id:
+                await asyncio.sleep(0.02)
+        await original.send_text("still alive", submit=True)
+        await screen_contains(original, "ORIGINAL:still alive")
+    finally:
+        if owner.returncode is None:
+            owner.kill()
+            await owner.wait()
+
+
+@pytest.mark.parametrize("shutdown", [
+    "close", "owner-death", "pane-removal", "suspended-close", "suspended-owner-death",
+])
+@pytest.mark.parametrize("leader_exits", [False, True])
+async def test_shutdown_removes_resistant_helper(
+    current_tmux_terminal, isolated_tmux, tmp_path, shutdown, leader_exits,
+):
+    # Arrange: the helper ignores terminal hangup and polite termination, holding a real lock.
+    helper = tmp_path / "helper.py"
+    lock = tmp_path / "helper.lock"
+    release = tmp_path / "release-helper"
+    helper.write_text('''
+import fcntl, signal, sys, time
+from pathlib import Path
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+with open(sys.argv[1], 'w') as locked:
+    fcntl.flock(locked, fcntl.LOCK_EX)
+    print('HELPER READY', flush=True)
+    deadline = time.monotonic() + 15
+    while not Path(sys.argv[2]).exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+''')
+    leader = tmp_path / "leader.py"
+    leader.write_text('''
+import subprocess, sys, time
+subprocess.Popen([sys.executable, sys.argv[1], sys.argv[2], sys.argv[3]])
+if sys.argv[4] == 'False':
+    time.sleep(60)
+''')
+    close = tmp_path / "close"
+    code = '''
+import asyncio, sys
+from pathlib import Path
+from agent_shell import TmuxExecutionHost, TmuxPlacement
+async def main():
+    terminal = await TmuxExecutionHost(TmuxPlacement.split_pane()).launch_interactive(
+        [sys.executable, *sys.argv[1:6]], str(Path(sys.argv[1]).parent))
+    async with asyncio.timeout(5):
+        while 'HELPER READY' not in await terminal.capture_screen():
+            await asyncio.sleep(0.01)
+    if sys.argv[5] == 'True':
+        await terminal.wait()
+    print(terminal.pane_id, flush=True)
+    while not Path(sys.argv[6]).exists():
+        await asyncio.sleep(0.02)
+    await terminal.close()
+asyncio.run(main())
+'''
+    owner = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", code, str(leader), str(helper), str(lock), str(release),
+        str(leader_exits), str(close), stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        pane = (await asyncio.wait_for(owner.stdout.readline(), 5)).decode().strip()
+        assert pane.startswith("%")
+        with lock.open("a") as probe:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            # Act: Ctrl-Z suspends the foreground group before cleanup.
+            if shutdown.startswith("suspended-"):
+                await isolated_tmux("send-keys", "-t", pane, "C-z")
+                shutdown = shutdown.removeprefix("suspended-")
+            if shutdown == "owner-death":
+                owner.kill()
+            elif shutdown == "pane-removal":
+                await isolated_tmux("kill-pane", "-t", pane)
+            else:
+                close.touch()
+
+            # Assert: the helper releases its lock well before its own safety deadline.
+            async with asyncio.timeout(3):
+                while True:
+                    try:
+                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        await asyncio.sleep(0.02)
+        await current_tmux_terminal.send_text("still alive", submit=True)
+        await screen_contains(current_tmux_terminal, "ORIGINAL:still alive")
+    finally:
+        release.touch()
+        close.touch()
+        if owner.returncode is None and shutdown == "pane-removal":
+            owner.kill()
+        try:
+            await asyncio.wait_for(owner.communicate(), 5)
+        except TimeoutError:
+            owner.kill()
+            await owner.wait()
+
+
 async def test_concurrent_close_is_idempotent(isolated_tmux, tmp_path):
     # Arrange
     terminal = await TmuxExecutionHost().launch_interactive(
@@ -433,6 +597,77 @@ async def test_concurrent_close_is_idempotent(isolated_tmux, tmp_path):
     # Assert
     assert terminal.closed
     assert await terminal.wait() < 0
+
+
+@pytest.mark.parametrize("interactive", [True, False])
+@pytest.mark.parametrize("replacement_name", ["owned-work", "owned"])
+async def test_close_does_not_target_another_session_after_owned_session_disappears(
+    isolated_tmux, current_tmux_terminal, tmp_path, replacement_name, interactive,
+):
+    # Arrange: retain a sentinel so the server cannot restart and reuse IDs.
+    host = TmuxExecutionHost(TmuxPlacement.new_session("owned"))
+    launch = host.launch_interactive if interactive else host.launch
+    terminal = await launch([sys.executable, "-c", "pass"], str(tmp_path))
+    await asyncio.wait_for(terminal.wait(), 5)
+    pane = await isolated_tmux("list-panes", "-t", "=owned:", "-F", "#{pane_id}")
+    await isolated_tmux("kill-pane", "-t", pane)
+    async with await TmuxExecutionHost(
+        TmuxPlacement.new_session(replacement_name),
+    ).launch_interactive([sys.executable, "-c", "input()"], str(tmp_path)) as replacement:
+        # Act
+        if interactive:
+            await terminal.close()
+        else:
+            terminal.release()
+
+        # Assert
+        assert await isolated_tmux("list-panes", "-t", replacement.pane_id,
+                                   "-F", "#{pane_id}") == replacement.pane_id
+
+
+@pytest.mark.parametrize("interactive", [True, False])
+@pytest.mark.parametrize("kind", ["session", "window", "pane"])
+async def test_close_preserves_replacement_after_server_restart(
+    isolated_tmux, tmp_path, monkeypatch, interactive, kind,
+):
+    # Arrange: restart only the fixture's dedicated server, deliberately reusing resource IDs.
+    async def prepare_server():
+        if kind == "session":
+            return TmuxPlacement.new_session("owned")
+        identity = await isolated_tmux(
+            "new-session", "-d", "-s", "base", "-P", "-F", "#{pane_id} #{socket_path}",
+            "--", sys.executable, "-c", "import time; time.sleep(60)",
+        )
+        pane, socket = identity.split()
+        monkeypatch.setenv("TMUX", f"{socket},0,0")
+        monkeypatch.setenv("TMUX_PANE", pane)
+        return TmuxPlacement.split_pane() if kind == "pane" else TmuxPlacement.current_session()
+
+    host = TmuxExecutionHost(await prepare_server())
+    launch = host.launch_interactive if interactive else host.launch
+    terminal = await launch([sys.executable, "-c", "pass"], str(tmp_path))
+    await asyncio.wait_for(terminal.wait(), 5)
+    old_ids = await isolated_tmux("list-panes", "-a", "-F", "#{session_id} #{window_id} #{pane_id}")
+    await isolated_tmux("kill-server")
+    await prepare_server()
+    async with await host.launch_interactive(
+        [sys.executable, "-c", "print('READY', flush=True); input()"], str(tmp_path),
+    ) as replacement:
+        await screen_contains(replacement, "READY")
+        assert await isolated_tmux(
+            "list-panes", "-a", "-F", "#{session_id} #{window_id} #{pane_id}",
+        ) == old_ids
+
+        # Act
+        if interactive:
+            await terminal.close()
+        else:
+            terminal.release()
+
+        # Assert
+        assert await isolated_tmux(
+            "list-panes", "-a", "-F", "#{session_id} #{window_id} #{pane_id}",
+        ) == old_ids
 
 
 async def test_manually_removed_pane_does_not_hang_waiter(isolated_tmux, tmp_path):
@@ -470,7 +705,7 @@ async def test_tmux_kill_timeout_still_releases_owner(isolated_tmux, tmp_path, m
     wrapper = tmp_path / "tmux"
     wrapper.write_text(
         f"#!{sys.executable}\nimport os, sys, time\n"
-        "if any(arg in ('kill-session', 'kill-window') for arg in sys.argv):\n"
+        "if any(arg.startswith(('kill-session', 'kill-window')) for arg in sys.argv):\n"
         "    time.sleep(60)\n"
         f"os.execv({real_tmux!r}, [{real_tmux!r}, *sys.argv[1:]])\n"
     )

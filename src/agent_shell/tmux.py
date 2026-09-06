@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from agent_shell import tmux_protocol
+from agent_shell.tmux_ownership import IDENTITY_FORMAT, TmuxResource
 from agent_shell.execution import (
     IsolationPolicy,
     IsolationUnavailableError,
@@ -158,9 +159,7 @@ class _TmuxRunHandle:
         self,
         *,
         tmux_path: str,
-        resource_kind: Literal["session", "window", "pane"],
-        session_name: str,
-        resource_id: str | None,
+        resource: TmuxResource,
         run_directory: str,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
@@ -168,9 +167,7 @@ class _TmuxRunHandle:
         stdin_pipe: bool,
     ):
         self._tmux_path = tmux_path
-        self._resource_kind = resource_kind
-        self._session_name = session_name
-        self._resource_id = resource_id
+        self._resource = resource
         self._run_directory = run_directory
         self._reader = reader
         self._writer = writer
@@ -300,21 +297,16 @@ class _TmuxRunHandle:
             _TMUX_ACTIVE_RUNS.discard(self)
 
     def _cleanup_resource(self) -> None:
-        _cleanup_tmux_resource(
-            self._tmux_path, self._resource_kind, self._session_name, self._resource_id,
+        _cleanup_tmux_resource(self._tmux_path, self._resource)
+
+
+def _cleanup_tmux_resource(tmux_path: str, resource: TmuxResource) -> None:
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        subprocess.run(
+            [tmux_path, "-f", "/dev/null", *resource.cleanup_args()],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False, timeout=2.0,
         )
-
-
-def _cleanup_tmux_resource(
-    tmux_path: str,
-    resource_kind: Literal["session", "window", "pane"],
-    session_name: str,
-    resource_id: str | None,
-) -> None:
-    if resource_kind == "session":
-        _tmux_kill_session(tmux_path, session_name)
-    elif resource_id:
-        _tmux_kill_resource(tmux_path, resource_kind, resource_id)
 
 
 class _TmuxStdin:
@@ -348,30 +340,6 @@ class _TmuxStdin:
 
     async def wait_closed(self) -> None:
         await self.drain()
-
-
-def _tmux_kill_session(tmux_path: str, session_name: str) -> None:
-    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
-        subprocess.run(
-            [tmux_path, "-f", "/dev/null", "kill-session", "-t", session_name],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=2.0,
-        )
-
-
-def _tmux_kill_resource(tmux_path: str, kind: str, target: str) -> None:
-    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
-        subprocess.run(
-            [tmux_path, "-f", "/dev/null", f"kill-{kind}", "-t", target],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=2.0,
-        )
 
 
 async def _tmux_current_session(tmux_path: str) -> str:
@@ -476,7 +444,7 @@ class TmuxExecutionHost:
             session_name = placement.session or f"agentshell-{uuid.uuid4().hex}"
         run_directory = tempfile.mkdtemp(prefix="agentshell-tmux-")
         socket_path = os.path.join(run_directory, "bridge.sock")
-        resource_id: str | None = None
+        resource: TmuxResource | None = None
         resource_kind: Literal["session", "window", "pane"] = (
             "session" if placement.kind == "new-session"
             else "pane" if placement.kind == "split-pane" else "window"
@@ -498,7 +466,6 @@ class TmuxExecutionHost:
             connection.set_result((reader, writer))
 
         server: asyncio.Server | None = None
-        resource_created = False
         try:
             server = await asyncio.start_unix_server(accept_connection, path=socket_path)
             tmux_command = [tmux_path, "-f", "/dev/null"]
@@ -511,14 +478,14 @@ class TmuxExecutionHost:
                         session_name,
                         "-P",
                         "-F",
-                        "#{pane_id}",
+                        IDENTITY_FORMAT,
                     ]
                 )
             elif placement.kind == "split-pane":
                 tmux_command.extend([
                     "split-window", "-h" if placement.direction == "right" else "-v",
                     *([] if placement.focus else ["-d"]),
-                    "-t", os.environ["TMUX_PANE"], "-P", "-F", "#{pane_id}",
+                    "-t", os.environ["TMUX_PANE"], "-P", "-F", IDENTITY_FORMAT,
                 ])
             else:
                 tmux_command.extend(
@@ -529,7 +496,7 @@ class TmuxExecutionHost:
                         _tmux_exact_session_target(session_name),
                         "-P",
                         "-F",
-                        "#{window_id}",
+                        IDENTITY_FORMAT,
                     ]
                 )
             tmux_command.extend(
@@ -564,14 +531,12 @@ class TmuxExecutionHost:
                 raise TmuxUnavailableError(
                     f"tmux could not create the AgentShell {resource_label}{suffix}"
                 )
-            resource_created = True
-            if placement.kind != "new-session":
-                resource_id = stdout.decode("utf-8", errors="replace").strip()
-                if not resource_id:
-                    raise TmuxUnavailableError(
-                        f"tmux created a run {resource_kind} but did not report its "
-                        f"{resource_kind} id"
-                    )
+            try:
+                resource = TmuxResource.from_identity(
+                    resource_kind, stdout.decode("utf-8", errors="replace"), run_directory,
+                )
+            except ValueError as error:
+                raise TmuxUnavailableError(str(error)) from error
 
             reader, writer = await asyncio.wait_for(connection, timeout=5.0)
             channel, payload = await asyncio.wait_for(
@@ -595,9 +560,7 @@ class TmuxExecutionHost:
             await _tmux_send_frame(writer, tmux_protocol.CONFIG, config)
             run_handle = _TmuxRunHandle(
                 tmux_path=tmux_path,
-                resource_kind=resource_kind,
-                session_name=session_name,
-                resource_id=resource_id,
+                resource=resource,
                 run_directory=run_directory,
                 reader=reader,
                 writer=writer,
@@ -622,10 +585,8 @@ class TmuxExecutionHost:
             if server is not None:
                 server.close()
             if not handed_off:
-                if resource_created:
-                    _cleanup_tmux_resource(
-                        tmux_path, resource_kind, session_name, resource_id
-                    )
+                if resource is not None:
+                    _cleanup_tmux_resource(tmux_path, resource)
                 shutil.rmtree(run_directory, ignore_errors=True)
 
 
