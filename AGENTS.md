@@ -270,30 +270,12 @@ entries from `~/.claude.json` directly, avoiding the health checks and human-rea
 `claude mcp list`. Cursor manages user-scope MCP entries directly in `~/.cursor/mcp.json` because
 its `mcp` subcommands have no add/remove commands. Grok listing reads user-scope `mcp_servers`
 entries from `~/.grok/config.toml` directly for the same reason. Pi's MCP add/remove/list methods
-raise `NotImplementedError`. Pi packages and local extensions use the separate package API below.
+raise `NotImplementedError`.
 
 ## Package Management
 
-`AgentShell` and `AgentAdapter` expose `add_package(PackageSpec, timeout=120.0)`, `list_packages()`,
-and `remove_package(source, timeout=120.0)`. `PackageSpec` is a frozen model with a single `source`
-string. Pi implements the lifecycle; other adapters raise `NotImplementedError`.
-
-Pi uses its native install/remove commands with user scope and reads configured packages directly
-from `settings.json`. Configuration follows `PI_CODING_AGENT_DIR`, falling back to `~/.pi/agent`.
-No new runtime directory or evaluation isolation is introduced: callers own container mappings and
-per-run isolation. Like MCP management, these operations run locally and inherit the environment,
-independently of the selected execution host/isolation policy.
-
-Installs accept exact npm versions, Git sources with an explicit ref, and existing local files or
-package directories. Relative input paths resolve against the Python process cwd. Listing returns
-configured package sources with local paths normalized to absolute paths. It does not prove that
-resources loaded.
-Standalone `extensions` entries and project-local packages are outside this initial API.
-
-Pi can exit zero even when saving settings fails. Package operations reject malformed settings
-before modification and verify persistence after the command exits. Timeouts and cancellation clean
-up the command's process group. Local-only Pi E2Es verify repeat registration, removal, loading by a
-fresh shell, and read-only settings failure without downloads or model requests.
+See [package management](docs/development/package_management.md) for the API, Pi behaviour,
+scope, and validation details.
 
 ## Test Philosophy
 
