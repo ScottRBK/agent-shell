@@ -1,5 +1,7 @@
 from typing import Protocol, AsyncIterator
-from agent_shell.models.agent import AgentResponse, StreamEvent, MCPServerSpec, HealthCheckResult
+from agent_shell.models.agent import (
+    AgentResponse, StreamEvent, MCPServerSpec, HealthCheckResult, PackageSpec,
+)
 
 class AgentAdapter(Protocol):
     async def execute(
@@ -63,4 +65,16 @@ class AgentAdapter(Protocol):
         ...
 
     async def list_mcp_servers(self) -> list[MCPServerSpec]:
+        ...
+
+    async def list_packages(self) -> list[PackageSpec]:
+        """List configured user-scope packages; unsupported adapters raise NotImplementedError."""
+        ...
+
+    async def add_package(self, package: PackageSpec, *, timeout: float = 120.0) -> None:
+        """Install/register a user-scope package; unsupported adapters raise NotImplementedError."""
+        ...
+
+    async def remove_package(self, source: str, *, timeout: float = 120.0) -> None:
+        """Remove a user-scope package; unsupported adapters raise NotImplementedError."""
         ...

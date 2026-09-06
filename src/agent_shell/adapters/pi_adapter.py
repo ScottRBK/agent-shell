@@ -2,11 +2,13 @@ import asyncio
 import codecs
 import json
 import logging
+import math
 import os
 import re
 import warnings
 from pathlib import Path
 from typing import AsyncIterator
+from urllib.parse import urlsplit
 
 from agent_shell.adapters.health import run_health_probe
 from agent_shell.adapters.model_discovery import decode_model_output, run_model_command
@@ -24,6 +26,7 @@ from agent_shell.models.agent import (
     AgentResponse,
     HealthCheckResult,
     MCPServerSpec,
+    PackageSpec,
     StreamEvent,
 )
 from agent_shell.process_cleanup import (
@@ -47,6 +50,51 @@ _DISALLOWED_TOOL_MAP = {
 # Pi's StopReason union is stop|length|toolUse|error|aborted. Neither an errored nor an
 # aborted turn produced a completed answer, so both must report status "error".
 _FAILURE_STOP_REASONS = ("error", "aborted")
+
+_PACKAGE_REMOTE_PREFIXES = ("npm:", "git:", "https://", "http://", "ssh://")
+
+
+def _package_source(source: str, *, installing: bool) -> str:
+    """Validate Pi's explicit source forms and resolve local paths against the caller's cwd."""
+    PackageSpec(source)
+    if source.startswith("npm:"):
+        match = re.fullmatch(r"npm:(?:@[^/@\s]+/)?[^/@\s]+(?:@([^\s]+))?", source)
+        if not match:
+            raise ValueError("Invalid Pi npm package source")
+        version = match.group(1) or ""
+        if installing and not re.fullmatch(
+            r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+            r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", version,
+        ):
+            raise ValueError("Pi npm installs require a pinned version, e.g. npm:tools@1.2.3")
+        return source
+    if source.startswith(_PACKAGE_REMOTE_PREFIXES):
+        repository = source[4:] if source.startswith("git:") else source
+        if "://" in repository:
+            parsed = urlsplit(repository)
+            if parsed.scheme not in {"https", "http", "ssh", "git"} or not parsed.hostname:
+                raise ValueError("Invalid Pi Git package source")
+            if parsed.query or parsed.fragment:
+                raise ValueError("Pi Git sources use @ref, not query strings or fragments")
+            path = parsed.path.lstrip("/")
+        else:
+            # Both git@host:owner/repo and host/owner/repo are native Pi sources.
+            match = re.fullmatch(r"(?:git@[^: /]+:|[^: /]+/)(.+)", repository)
+            if not match:
+                raise ValueError("Invalid Pi Git package source")
+            path = match.group(1)
+        repo_path, separator, ref = path.partition("@")
+        if len(repo_path.split("/")) < 2 or any(char.isspace() for char in path):
+            raise ValueError("Invalid Pi Git package source")
+        if installing and (not separator or not ref):
+            raise ValueError("Pi Git installs require an explicit @ref (tag or commit)")
+        return source
+    if not (Path(source).is_absolute() or source.startswith(("./", "../", "~/"))):
+        raise ValueError("Unsupported Pi package source; use npm:, git:, or an explicit local path")
+    path = Path(source).expanduser().resolve()
+    if installing and not path.exists():
+        raise ValueError(f"Local Pi package source does not exist: {path}")
+    return str(path)
 
 
 def _failure_reason(message: dict) -> str:
@@ -462,3 +510,67 @@ class PiAdapter:
 
     async def list_mcp_servers(self) -> list[MCPServerSpec]:
         raise NotImplementedError("list_mcp_servers is not yet implemented for Pi")
+
+    async def list_packages(self) -> list[PackageSpec]:
+        override = os.environ.get("PI_CODING_AGENT_DIR")
+        directory = Path(override).expanduser() if override else Path.home() / ".pi" / "agent"
+        settings_path = directory / "settings.json"
+        try:
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        except (OSError, ValueError) as error:
+            raise RuntimeError(
+                f"Cannot read Pi package settings at {settings_path}: {error}"
+            ) from error
+        try:
+            if not isinstance(settings, dict) or not isinstance(settings.get("packages", []), list):
+                raise ValueError("expected a settings object with a packages array")
+            packages = []
+            for entry in settings.get("packages", []):
+                source = entry.get("source") if isinstance(entry, dict) else entry
+                PackageSpec(source)  # Validate before interpreting a source as a local path.
+                if not source.startswith(_PACKAGE_REMOTE_PREFIXES):
+                    path = Path(source).expanduser()
+                    source = str((directory / path).resolve())
+                packages.append(PackageSpec(source=source))
+            return packages
+        except ValueError as error:
+            raise RuntimeError(
+                f"Invalid Pi package settings at {settings_path}: {error}"
+            ) from error
+
+    async def add_package(self, package: PackageSpec, *, timeout: float = 120.0) -> None:
+        source = _package_source(package.source, installing=True)
+        await self._run_package_command("install", source, timeout)
+
+    async def remove_package(self, source: str, *, timeout: float = 120.0) -> None:
+        source = _package_source(source, installing=False)
+        await self._run_package_command("remove", source, timeout)
+
+    async def _run_package_command(self, operation: str, source: str, timeout: float) -> None:
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("Package timeout must be a positive finite number")
+        before = await self.list_packages()  # Reject malformed settings before Pi can modify them.
+        # Configuration management stays local, independent of the selected execution host.
+        label = f"pi {operation}"
+        try:
+            process = await NativeExecutionHost().launch(
+                ["pi", operation, source, "--no-approve"], cwd=os.getcwd(),
+            )
+        except OSError as error:
+            raise RuntimeError(f"Could not start `{label}`: {error}") from error
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            if process.returncode != 0:
+                detail = format_stderr(stderr or stdout) or f"exit code {process.returncode}"
+                raise RuntimeError(f"`{label}` failed: {detail}")
+        except TimeoutError as error:
+            raise RuntimeError(f"`{label}` timed out after {timeout:g} seconds") from error
+        finally:
+            await process.cancel()
+        # Pi can exit zero when its queued settings write failed. The next run needs disk state.
+        after = await self.list_packages()
+        persisted = PackageSpec(source) in after if operation == "install" else before != after
+        if not persisted:
+            raise RuntimeError(f"`{label}` did not persist the package change in Pi settings")

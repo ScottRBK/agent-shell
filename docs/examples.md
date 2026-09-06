@@ -432,6 +432,75 @@ entries directly from `~/.claude.json`, Cursor from `~/.cursor/mcp.json`, and Gr
 `~/.grok/config.toml`, so listing does not launch configured servers for health checks. MCP
 is not supported for Pi; all three MCP methods raise `NotImplementedError`.
 
+## Packages and local extensions
+
+`add_package`, `list_packages`, and `remove_package` provide a shared package API. Pi implements
+these operations first; other adapters raise `NotImplementedError`.
+
+```python
+from agent_shell.models.agent import AgentType, PackageSpec
+from agent_shell.shell import AgentShell
+
+# arrange(): install once using the container's existing Pi configuration location.
+shell = AgentShell(AgentType.PI)
+await shell.add_package(PackageSpec(source="npm:@example/pi-tools@1.2.3"))
+
+# Local extension files and package directories can be registered too.
+await shell.add_package(PackageSpec(source="./extensions/my-tools.ts"))
+
+# act(): a fresh shell inherits the same Pi configuration and loads its packages.
+shell = AgentShell(AgentType.PI)
+response = await shell.execute(cwd="/workspace", prompt="Use the installed tools.")
+
+for package in await shell.list_packages():
+    print(package.source)
+
+await shell.remove_package("npm:@example/pi-tools")
+```
+
+The npm name above is illustrative; substitute a real package. Pi packages may contain extensions,
+skills, prompts, and themes. Installing a package enables its resources according to Pi's settings
+and package manifest. Local sources are registered in place, not copied; keep them available for
+later runs. Removing a local source removes its registration and preserves the original files.
+
+Scope follows Pi's existing user configuration: `PI_CODING_AGENT_DIR` when set, otherwise
+`~/.pi/agent`. These methods inherit the caller's environment and run locally, independently of
+the selected execution host and isolation policy. They do not modify project `.pi/settings.json`.
+The caller owns container mappings and separation between evaluation runs. A fresh AgentShell
+uses the same configuration as long as its process inherits the same mapping/environment.
+
+Supported installation sources:
+
+- npm sources with an exact version, such as `npm:tools@1.2.3`; implicit latest and version ranges
+  are rejected.
+- Git sources with an explicit `@ref`, such as `git:github.com/example/tools@v1` or
+  `ssh://git@github.com/example/tools@COMMIT`. Prefer commit IDs for reproducible runs.
+- Absolute paths or paths starting with `./`, `../`, or `~/`, pointing to an existing extension
+  file or package directory. Relative input paths resolve against the Python process's current
+  working directory.
+
+`list_packages()` reads user settings and returns `list[PackageSpec]`, including packages configured
+outside AgentShell. Local sources are returned as absolute paths, so they can be passed to removal
+from another working directory. Listing reports configured packages, not successful extension
+loading; it excludes project packages and standalone entries in Pi's `extensions` setting.
+Package resource filters are left to Pi and are not represented by `PackageSpec`.
+
+Adding the same source again follows Pi's package identity rules: npm package name, Git repository,
+or resolved local path. A new version replaces the configured source for that identity. Removal
+accepts an npm name or Git source without a version/ref, or a local path. Missing packages and CLI
+failures raise `RuntimeError` with Pi's diagnostic. Invalid sources raise `ValueError`.
+
+Install and remove accept `timeout=120.0` (seconds). A timeout raises `RuntimeError`; task
+cancellation propagates `asyncio.CancelledError`. Both clean up the command's process group.
+Pi owns installation and persistence; failed or cancelled operations may leave downloaded files.
+Per-run resource selection and individual enable/disable controls are outside this initial API.
+Pi extensions execute with the process's permissions; this API does not sandbox their code.
+
+See [Pi packages][pi-packages] for native package behaviour.
+
+[pi-packages]:
+  https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md
+
 ## Logging
 
 Agent Shell uses Python's standard `logging` module. Configure the `agent_shell` logger to capture

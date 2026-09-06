@@ -25,6 +25,7 @@ from agent_shell.models.agent import (
     AgentResponse,
     HealthCheckResult,
     MCPServerSpec,
+    PackageSpec,
     MCPServerType,
     StreamEvent,
 )
@@ -522,6 +523,15 @@ class CopilotCLIAdapter:
         path = self._config_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(config, indent=2))
+
+    async def add_package(self, package: PackageSpec, *, timeout: float = 120.0) -> None:
+        raise NotImplementedError("add_package is not supported for Copilot CLI")
+
+    async def list_packages(self) -> list[PackageSpec]:
+        raise NotImplementedError("list_packages is not supported for Copilot CLI")
+
+    async def remove_package(self, source: str, *, timeout: float = 120.0) -> None:
+        raise NotImplementedError("remove_package is not supported for Copilot CLI")
 
     async def add_mcp_server(self, mcp_server: MCPServerSpec) -> None:
         config = self._read_config()

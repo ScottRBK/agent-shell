@@ -25,6 +25,8 @@ and returning the output that can be used programatically as a unified contract
   (`bash, edit, read, web_search, web_fetch`) translated to each CLI's own tool names.
 - **Unified MCP management** — register, remove, and list MCP servers across agents through a
   single API.
+- **Package management** — install/register, list, and remove harness packages through a shared
+  API, with Pi as the first supported agent.
 - **Async & dependency-free** — pure `asyncio`, zero runtime dependencies, Python 3.12+.
 
 ## Installation
@@ -106,4 +108,4 @@ follow_up = await shell.execute(
 > tokens** (they are billed at the output rate). It is reported consistently across all adapters.
 
 See [more examples](docs/examples.md) for isolation and execution hosts, failure handling,
-streaming, model discovery, health checks, tool restrictions, MCP servers, and logging.
+streaming, model discovery, health checks, tool restrictions, MCP servers, packages, and logging.
