@@ -62,6 +62,22 @@ async def test_missing_settings_means_no_configured_packages(pi_config):
     assert packages == []
 
 
+async def test_symlinked_config_preserves_pi_local_package_identity(pi_config, monkeypatch):
+    # Arrange — Pi resolves relative sources lexically, without following directory symlinks.
+    (pi_config / "settings.json").write_text('{"packages": ["../tool.js"]}')
+    mapped = pi_config.parent / "mapped"
+    mapped.mkdir()
+    config_link = mapped / "agent"
+    config_link.symlink_to(pi_config, target_is_directory=True)
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(config_link))
+
+    # Act
+    packages = await AgentShell(AgentType.PI).list_packages()
+
+    # Assert — this is the path Pi will use, not the target directory's sibling.
+    assert packages == [PackageSpec(str(mapped / "tool.js"))]
+
+
 @pytest.mark.parametrize("source", [
     "npm:@example/tools@1.2.3",
     "git:github.com/example/tools@v2",
@@ -81,10 +97,16 @@ async def test_installs_pinned_package_through_pi_cli(pi_config, source):
     assert launch.call_args.kwargs["env"] is None
 
 
-async def test_registers_local_extension_with_literal_absolute_path(pi_config):
+@pytest.mark.parametrize("symlink", [False, True])
+async def test_registers_local_extension_with_literal_absolute_path(pi_config, symlink):
     # Arrange — spaces and shell syntax are valid filename characters, not executable code.
     extension = pi_config.parent / "tools $(touch unwanted).ts"
-    extension.write_text("export default function (pi) {}")
+    if symlink:
+        target = pi_config.parent / "target.ts"
+        target.write_text("export default function (pi) {}")
+        extension.symlink_to(target)
+    else:
+        extension.write_text("export default function (pi) {}")
     process = _successful_process(pi_config, [str(extension)])
 
     # Act

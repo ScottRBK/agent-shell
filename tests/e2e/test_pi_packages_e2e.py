@@ -50,6 +50,28 @@ async def test_local_package_lifecycle_survives_fresh_shells(pi_workspace, direc
     assert extension.is_file()  # Removing a local registration must preserve the caller's files.
 
 
+async def test_symlinked_extension_keeps_its_registered_path(pi_workspace):
+    # Arrange — Pi identifies local packages by the link path, not its current target.
+    target = pi_workspace / "target.js"
+    target.write_text("export default function (pi) {}")
+    extension = pi_workspace / "linked.js"
+    extension.symlink_to(target)
+    spec = PackageSpec(str(extension))
+    shell = AgentShell(AgentType.PI)
+
+    # Act
+    await shell.add_package(spec)
+    installed = await AgentShell(AgentType.PI).list_packages()
+    await shell.remove_package(spec.source)
+    remaining = await shell.list_packages()
+
+    # Assert
+    assert installed == [spec]
+    assert remaining == []
+    assert extension.is_symlink()
+    assert target.is_file()
+
+
 async def test_fresh_shell_loads_registered_extension_on_stream(pi_workspace):
     # Arrange — handle input in the extension so this test never sends a model request.
     marker = pi_workspace / "extension-ran.txt"

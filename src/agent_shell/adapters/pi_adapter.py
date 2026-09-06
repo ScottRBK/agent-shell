@@ -91,7 +91,8 @@ def _package_source(source: str, *, installing: bool) -> str:
         return source
     if not (Path(source).is_absolute() or source.startswith(("./", "../", "~/"))):
         raise ValueError("Unsupported Pi package source; use npm:, git:, or an explicit local path")
-    path = Path(source).expanduser().resolve()
+    # Match Pi's node:path.resolve: preserve symlinks as distinct package identities.
+    path = Path(os.path.abspath(Path(source).expanduser()))
     if installing and not path.exists():
         raise ValueError(f"Local Pi package source does not exist: {path}")
     return str(path)
@@ -532,7 +533,7 @@ class PiAdapter:
                 PackageSpec(source)  # Validate before interpreting a source as a local path.
                 if not source.startswith(_PACKAGE_REMOTE_PREFIXES):
                     path = Path(source).expanduser()
-                    source = str((directory / path).resolve())
+                    source = os.path.abspath(directory / path)
                 packages.append(PackageSpec(source=source))
             return packages
         except ValueError as error:

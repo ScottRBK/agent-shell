@@ -477,7 +477,7 @@ Supported installation sources:
   `ssh://git@github.com/example/tools@COMMIT`. Prefer commit IDs for reproducible runs.
 - Absolute paths or paths starting with `./`, `../`, or `~/`, pointing to an existing extension
   file or package directory. Relative input paths resolve against the Python process's current
-  working directory.
+  working directory. Symbolic links retain their link paths, matching Pi's package identities.
 
 `list_packages()` reads user settings and returns `list[PackageSpec]`, including packages configured
 outside AgentShell. Local sources are returned as absolute paths, so they can be passed to removal
