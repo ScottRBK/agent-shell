@@ -9,3 +9,6 @@ src/agent_shell/_version.py
 
 # Virtual environments
 .venv
+
+# Local Pi workspace data
+/.pi/
