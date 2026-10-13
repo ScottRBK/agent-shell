@@ -29,7 +29,101 @@ _TMUX_COMMAND_TIMEOUT = 5.0
 
 
 class TmuxUnavailableError(RuntimeError):
-    """Raised when the optional tmux execution host cannot start a managed run."""
+    """Raised when a tmux run or terminal target is unavailable."""
+
+
+async def _run_tmux_command(
+    tmux: str, *args: str, socket_path: str | None = None,
+    env: dict[str, str] | None = None, data: bytes | None = None,
+) -> str:
+    """Run a bounded tmux control command; no shell interprets its arguments."""
+    process = await asyncio.create_subprocess_exec(
+        tmux, "-f", "/dev/null",
+        *(["-S", socket_path] if socket_path is not None else []),
+        *args, env=env,
+        stdin=asyncio.subprocess.PIPE if data is not None else asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(data), _TMUX_COMMAND_TIMEOUT)
+    except BaseException:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        await process.wait()
+        raise
+    if process.returncode:
+        raise TmuxUnavailableError(stderr.decode(errors="replace").strip())
+    return stdout.decode(errors="replace")
+
+
+@dataclass(frozen=True, slots=True)
+class TmuxTarget:
+    """Captured terminal identity, not an agent conversation ID (experimental).
+
+    Use ``await TmuxTarget.capture(pane_id, socket_path=...)`` rather than constructing this
+    record by hand. It can be passed to a watcher, including one outside the target's server.
+    The pane PID identifies its first process, which may be a shell or AgentShell worker;
+    it does not prove which application currently reads terminal input.
+    """
+
+    socket_path: str
+    pane_id: str
+    server_pid: int
+    server_started: int
+    pane_pid: int
+
+    def __post_init__(self) -> None:
+        _validate_tmux_pane_id(self.pane_id)
+        _validate_tmux_socket_path(self.socket_path)
+        for name in ("server_pid", "server_started", "pane_pid"):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+
+    @classmethod
+    async def current(cls) -> TmuxTarget:
+        """Capture the caller's pane. Run in the agent's pane, not the watcher's pane."""
+        environment = os.environ.get("TMUX", "").rsplit(",", 2)
+        pane_id = os.environ.get("TMUX_PANE", "")
+        if len(environment) != 3 or not environment[0] or not pane_id:
+            raise TmuxUnavailableError("Capturing the current pane requires TMUX and TMUX_PANE")
+        return await cls.capture(pane_id, socket_path=environment[0])
+
+    @classmethod
+    async def capture(cls, pane_id: str, *, socket_path: str | None = None) -> TmuxTarget:
+        """Capture an exact pane on an explicit socket or the caller's tmux server."""
+        _validate_tmux_pane_id(pane_id)
+        if socket_path is not None:
+            _validate_tmux_socket_path(socket_path)
+        tmux = shutil.which("tmux")
+        if tmux is None:
+            raise TmuxUnavailableError("Attaching requires the optional `tmux` executable")
+        identity = await _run_tmux_command(
+            tmux, "display-message", "-p", "-t", pane_id,
+            "#{socket_path}\t#{pane_id}\t#{pid}\t#{start_time}\t#{pane_pid}\t#{pane_dead}",
+            socket_path=socket_path,
+        )
+        fields = identity.rstrip("\n").split("\t")
+        if len(fields) != 6 or fields[1] != pane_id or fields[5] != "0":
+            raise TmuxUnavailableError("The requested tmux pane is unavailable or dead")
+        try:
+            return cls(fields[0], fields[1], *(int(value) for value in fields[2:5]))
+        except ValueError as error:
+            raise TmuxUnavailableError("tmux did not report a valid pane identity") from error
+
+
+def _validate_tmux_pane_id(value: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError("tmux pane ID must be a string")
+    if not value.startswith("%") or not value[1:].isascii() or not value[1:].isdigit():
+        raise ValueError("tmux pane ID must be an exact ID such as %50")
+
+
+def _validate_tmux_socket_path(value: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError("tmux socket path must be a string")
+    if not os.path.isabs(value) or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError("tmux socket path must be absolute and contain no control characters")
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,6 +492,12 @@ class TmuxExecutionHost:
         if placement is not None and not isinstance(placement, TmuxPlacement):
             raise TypeError("placement must be a TmuxPlacement")
         self.placement = placement
+
+    async def attach_interactive(self, target: object):
+        """Borrow an existing terminal without changing placement or owning its process."""
+        from agent_shell.interactive_terminal import TmuxTerminalConnection
+
+        return await TmuxTerminalConnection.attach(target)
 
     async def launch_interactive(
         self, command: list[str], cwd: str, *, env: dict[str, str] | None = None,

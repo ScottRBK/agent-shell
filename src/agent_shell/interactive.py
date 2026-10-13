@@ -23,16 +23,49 @@ from agent_shell.execution import IsolationPolicy
 from agent_shell.models.agent import StreamEvent
 
 
-class InteractiveTerminal(Protocol):
+class TerminalControl(Protocol):
+    """Input and inspection, without claiming ownership or process-exit information."""
+
     closed: bool
-    returncode: int | None
 
     async def capture_screen(self) -> str: ...
     async def send_text(self, text: str, *, submit: bool = False) -> None: ...
     async def send_key(self, key: str) -> None: ...
+    async def close(self) -> None: ...
+
+
+class InteractiveTerminal(TerminalControl, Protocol):
+    returncode: int | None
+
     async def resize(self, *, columns: int, rows: int) -> None: ...
     async def wait(self) -> int: ...
-    async def close(self) -> None: ...
+
+
+@runtime_checkable
+class InteractiveAttachmentHost(Protocol):
+    """Optional capability, independent of launching interactive processes."""
+
+    async def attach_interactive(self, target: object) -> TerminalControl: ...
+
+
+class InteractiveConnection:
+    """Borrow terminal controls. Closing disconnects; it never stops the external agent.
+
+    Unlike a launched InteractiveSession, this connection has no structured event stream,
+    process wait, or exit status. Terminal input is not an agent-level delivery acknowledgement.
+    """
+
+    def __init__(self, terminal: TerminalControl):
+        self.terminal = terminal
+
+    async def close(self) -> None:
+        await self.terminal.close()
+
+    async def __aenter__(self) -> InteractiveConnection:
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        await self.close()
 
 
 @runtime_checkable

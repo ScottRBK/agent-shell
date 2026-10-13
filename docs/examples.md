@@ -141,6 +141,72 @@ unidentifiable windows fail closed without falling back to a new session. If tmu
 `TmuxUnavailableError` is raised and AgentShell does not silently fall back to the native host.
 Model discovery and MCP configuration remain local management operations.
 
+### Attach to an existing interactive terminal (experimental)
+
+Use `attach_interactive()` to send input to a running agent, without launching a second process
+or resuming its conversation in another process. Initially only `TmuxExecutionHost` supports it.
+The agent must already be running interactively in the chosen tmux pane.
+
+```python
+from agent_shell import TmuxExecutionHost, TmuxTarget
+
+shell = AgentShell(AgentType.CODEX, execution_host=TmuxExecutionHost())
+
+# Capture an exact pane on the caller's tmux server. The socket can also be explicit:
+# target = await TmuxTarget.capture("%50", socket_path="/tmp/tmux-1000/default")
+target = await TmuxTarget.capture("%50")
+
+async with await shell.attach_interactive(target) as connection:
+    await connection.terminal.send_text(
+        "The build finished; please check its results.", submit=True,
+    )
+# The connection is closed. The agent and its pane are still running.
+```
+
+There are two other ways to obtain a target without raw tmux commands:
+
+- `await TmuxTarget.current()` captures `TMUX` and `TMUX_PANE` from the **target agent's pane**.
+  Capture it in a launcher/wrapper before starting the agent there, or in a helper the agent
+  launches. Pass that reference to the watcher; do not capture the watcher's unrelated pane.
+- An AgentShell-launched interactive session exposes `session.terminal.target`. Another caller
+  can attach to it while the original session keeps ownership. Closing the original session still
+  stops the agent; attachments do not extend its lifetime.
+
+`.target` is tmux-specific, not part of the portable `InteractiveTerminal` protocol. Typed callers
+can narrow the terminal with `isinstance(terminal, TmuxTerminalConnection)` before reading it;
+import that concrete class from `agent_shell.interactive_terminal`.
+
+`TmuxTarget` is a frozen dataclass containing the socket, pane ID, and server/pane process identity.
+For a watcher in another process, transfer `dataclasses.asdict(target)` using your existing
+configuration or IPC mechanism and reconstruct it with `TmuxTarget(**fields)`. No registry or queue
+service is required. The captured socket is used even if the watcher's tmux environment differs.
+
+`InteractiveConnection.terminal` supports `send_text`, `send_key`, `capture_screen`, and `close`.
+Text is pasted literally; `submit=True` presses Enter afterward. No keyboard focus is changed.
+The connection does not expose agent events, completion/usage metrics, process waiting, exit
+status, or resizing. Capture is for inspection, not structured success detection.
+
+Limits and failure behaviour:
+
+- Opening and attaching are independent host capabilities. Unsupported hosts raise
+  `NotImplementedError`; passing a non-`TmuxTarget` to tmux raises `TypeError`.
+- Attachment requires `NoIsolation()`. Other policies raise `IsolationUnavailableError`, because
+  AgentShell cannot retroactively isolate an existing process. If the process-wide default is
+  isolated, opt out explicitly for this connection with `isolation_policy=NoIsolation()`.
+- Missing tmux, missing/dead panes, and stale targets raise `TmuxUnavailableError`. Server and pane
+  identities are checked at attachment and before terminal operations; saved targets do not
+  silently follow a restarted server or a respawned pane. No replacement process is launched.
+- Disconnect is idempotent, including context exit after an exception or cancellation. It never
+  sends Ctrl-C, stops the agent, or removes the pane. Operations on a closed connection fail.
+- The target identifies a terminal, **not a verified foreground agent**. If an agent exits back to
+  a still-running shell, the pane identity may remain unchanged. The caller must ensure the intended
+  program is reading input and coordinate with human typing, permission dialogs, and other writers.
+- Queueing belongs to the agent. A manual Codex test queued messages until its next tool call;
+  this is not a guarantee for every CLI, nor a promise to wait until an entire task finishes.
+  Success means terminal input was sent, not that the agent acknowledged or completed the request.
+- Paste and Enter are separate operations. Cancellation or transport failure can leave partially
+  delivered input. AgentShell does not automatically retry and risk duplicate messages.
+
 ### Terminal-window execution host (experimental)
 
 To watch a headless run in a new local graphical terminal window, inject the host into

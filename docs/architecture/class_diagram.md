@@ -8,6 +8,7 @@ classDiagram
         +execution_host: ExecutionHost
         +isolation_policy: IsolationPolicy
         +open_interactive(cwd: str, ...) InteractiveSession
+        +attach_interactive(target: object) InteractiveConnection
         +execute(cwd: str, prompt: str, ...) AgentResponse
         +stream(cwd: str, prompt: str, ...) AsyncIterator~StreamEvent~
         +health_check(cwd: str, model: Optional~str~, ...) HealthCheckResult
@@ -131,6 +132,7 @@ classDiagram
         <<experimental>>
         +launch(command: list~str~, cwd: str, ...) RunHandle
         +launch_interactive(command: list~str~, cwd: str, ...) TmuxTerminalSession
+        +attach_interactive(target: object) TmuxTerminalConnection
     }
 
     class window_TerminalWindowExecutionHost["TerminalWindowExecutionHost"] {
@@ -158,16 +160,49 @@ classDiagram
         +launch_interactive(command: list~str~, cwd: str, ...) InteractiveTerminal
     }
 
-    class interactive_InteractiveTerminal["InteractiveTerminal"] {
+    class interactive_TerminalControl["TerminalControl"] {
         <<Protocol>>
         +closed: bool
-        +returncode: Optional~int~
         +capture_screen() str
         +send_text(text: str, submit: bool) None
         +send_key(key: str) None
+        +close() None
+    }
+
+    class interactive_InteractiveTerminal["InteractiveTerminal"] {
+        <<Protocol>>
+        +returncode: Optional~int~
         +resize(columns: int, rows: int) None
         +wait() int
+    }
+
+    class interactive_InteractiveAttachmentHost["InteractiveAttachmentHost"] {
+        <<Protocol>>
+        +attach_interactive(target: object) TerminalControl
+    }
+
+    class interactive_InteractiveConnection["InteractiveConnection"] {
+        <<experimental>>
+        +terminal: TerminalControl
         +close() None
+        +\_\_aenter\_\_() InteractiveConnection
+        +\_\_aexit\_\_(...) None
+    }
+
+    class tmux_TmuxTarget["TmuxTarget"] {
+        <<dataclass>>
+        +socket_path: str
+        +pane_id: str
+        +server_pid: int
+        +server_started: int
+        +pane_pid: int
+        +capture(pane_id: str, socket_path: Optional~str~) TmuxTarget
+        +current() TmuxTarget
+    }
+
+    class terminal_TmuxTerminalConnection["TmuxTerminalConnection"] {
+        +target: TmuxTarget
+        +attach(target: object) TmuxTerminalConnection
     }
 
     class terminal_TmuxTerminalSession["TmuxTerminalSession"]
@@ -256,6 +291,17 @@ classDiagram
     shell_AgentShell ..> models_PackageSpec : accepts/returns
     models_MCPServerSpec --> models_MCPServerType : typed by
     claude_ClaudeCodeAdapter ..> models_StreamEvent : parses NDJSON into
+    shell_AgentShell ..> interactive_InteractiveAttachmentHost : attach requires
+    shell_AgentShell ..> interactive_InteractiveConnection : returns on attach
+    interactive_InteractiveConnection --> interactive_TerminalControl : borrows
+    interactive_InteractiveTerminal --|> interactive_TerminalControl
+    tmux_TmuxExecutionHost ..|> interactive_InteractiveAttachmentHost : satisfies
+    interactive_InteractiveAttachmentHost ..> interactive_TerminalControl : returns
+    tmux_TmuxExecutionHost ..> terminal_TmuxTerminalConnection : attaches
+    tmux_TmuxExecutionHost ..> tmux_TmuxTarget : accepts
+    terminal_TmuxTerminalConnection ..|> interactive_TerminalControl : satisfies
+    terminal_TmuxTerminalConnection --> tmux_TmuxTarget : identifies pane
+    terminal_TmuxTerminalSession --|> terminal_TmuxTerminalConnection
     shell_AgentShell ..> interactive_InteractiveAdapter : requires
     shell_AgentShell ..> interactive_InteractiveExecutionHost : requires
     shell_AgentShell ..> interactive_InteractiveSession : returns
@@ -279,14 +325,16 @@ Diagram conventions:
 - `+`/`-` denote public/internal naming conventions, not enforced Python access controls.
   Backslashes escape dunder underscores for rendering; they are not part of Python method names.
   `..|>` denotes structural Protocol conformance, not inheritance. Package methods may satisfy
-  the interface by raising `NotImplementedError`; `PackageSpec` is a frozen dataclass.
+  the interface by raising `NotImplementedError`; `PackageSpec` and `TmuxTarget` are frozen
+  dataclasses. `--|>` denotes actual inheritance, including protocol inheritance.
 - Methods are async except `prepare_interactive()`, event parsers, `release()`, and
   `PreparedLaunch.spawned()`/`failed()`. `stream()` and `events()` return async iterators;
   coroutine return types show the awaited value. `RunHandle.pid`/`returncode` are read-only
-  properties. Stream properties and implementation-specific terminal/handle members are omitted.
+  properties, as is `TmuxTerminalConnection.target`. Stream properties and other
+  implementation-specific terminal/handle members are omitted.
 - Unannotated types shown for stored fields and the concrete `open_interactive()`,
-  `prepare_interactive()`, and tmux `launch_interactive()` returns are inferred from assignments
-  and return expressions, not assumed from missing annotations.
+  `prepare_interactive()`, and tmux `launch_interactive()`/`attach_interactive()` returns
+  are inferred from assignments and return expressions, not assumed from missing annotations.
 - `Optional~T~` means `T | None`; Mermaid tildes represent Python generic brackets.
   Diagram-only aliases: `StringMap` = `dict[str, str]`; `BytePair` = `tuple[bytes, bytes]`;
   `IntTuple` = `tuple[int, ...]`; `EventParser` = `Callable[[dict], list[StreamEvent]]`;
@@ -316,6 +364,29 @@ Currently only `TmuxExecutionHost` supports it, and only with `NoIsolation`. The
 an `InteractiveLaunch` containing the command, event parser, capabilities, and optional event
 source; the host owns terminal transport. `InteractiveSession.events()` reads structured events,
 never terminal screen text. Callers own the session and must close it or use `async with`.
+
+`attach_interactive(target)` is a separate, optional `InteractiveAttachmentHost` capability;
+it does not require an interactive-launch-capable adapter or host. Initially only
+`TmuxExecutionHost` implements it. Unsupported hosts raise `NotImplementedError`, mismatched
+targets raise `TypeError`, and non-`NoIsolation` policies raise `IsolationUnavailableError`:
+attachment cannot apply isolation to an existing process. There is no fallback launch or resume.
+
+A `TmuxTarget` is captured by exact pane ID (optionally with an explicit socket), via `current()`
+in the target's environment, or through a launched tmux terminal's `.target`. That property is
+specific to `TmuxTerminalConnection`, not the portable terminal protocol. The target records server
+PID, server start time, and pane PID as well as the socket/pane address. Attachment and later
+pane operations check those identities on the tmux server and reject missing, dead, or replaced
+panes.
+The pane PID is its first process, not necessarily the agent: a shell may survive agent exit.
+Callers remain responsible for the foreground application, human drafts, and agent readiness.
+
+`InteractiveConnection` exposes only `TerminalControl` (input, inspection, and disconnect), without
+structured events, process waiting, resizing, or exit status. `TmuxTerminalConnection` implements
+that transport; `TmuxTerminalSession` adds launched-process ownership and retains its existing
+cleanup behaviour. Closing a borrowed connection never signals or removes the external process
+or pane. Closing its original owning session still stops it. Input queueing is native agent
+behaviour, not an AgentShell guarantee; input delivery is not completion acknowledgement. Paste
+and Enter are separate operations and are not automatically retried after partial failure.
 
 `HerdrExecutionHost`, `TmuxExecutionHost`, and `TerminalWindowExecutionHost` are experimental,
 opt-in APIs. Their constructors, placement options, supported platforms, and lifecycle behaviour

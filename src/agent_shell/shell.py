@@ -14,10 +14,12 @@ from agent_shell.adapters.pi_adapter import PiAdapter
 from agent_shell.execution import (
     ExecutionHost,
     IsolationPolicy,
+    IsolationUnavailableError,
     LinuxPidNamespaceIsolation,
     NativeExecutionHost,
     NoIsolation,
 )
+from agent_shell.interactive import InteractiveAttachmentHost, InteractiveConnection
 from agent_shell.models.agent import (
     AgentResponse,
     AgentType,
@@ -111,6 +113,22 @@ class AgentShell():
             session_id=session_id, allowed_tools=allowed_tools,
         )
 
+    async def attach_interactive(self, target: object) -> InteractiveConnection:
+        """Borrow an existing terminal (experimental), without launching an agent.
+
+        The target is host-specific (currently TmuxTarget). Attachment does not require an
+        interactive-launch-capable adapter. Closing the connection leaves the process running.
+        Requires NoIsolation: an existing process cannot be retroactively isolated.
+        """
+        if not isinstance(self.execution_host, InteractiveAttachmentHost):
+            raise NotImplementedError(
+                "This execution host does not support attaching to interactive terminals"
+            )
+        if not isinstance(self.isolation_policy, NoIsolation):
+            raise IsolationUnavailableError("Cannot apply isolation to an existing terminal")
+        terminal = await self.execution_host.attach_interactive(target)
+        return InteractiveConnection(terminal)
+
     async def execute(
             self,
             cwd: str,
@@ -187,7 +205,9 @@ class AgentShell():
         if not Path(cwd).is_dir():
             raise ValueError(f"Directory does not exist: {cwd}")
 
-        return await self._adapter.health_check(cwd=cwd, model=model, timeout=timeout, effort=effort)
+        return await self._adapter.health_check(
+            cwd=cwd, model=model, timeout=timeout, effort=effort,
+        )
 
     async def list_models(
             self,
