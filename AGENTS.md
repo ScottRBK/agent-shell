@@ -8,6 +8,16 @@ Before any planning, discussion of solution or code change work begins, you must
 [architecture class diagram](docs/architecture/class_diagram.md). It documents the interfaces,
 execution hosts, isolation policies, interactive sessions, and API behaviour.
 
+Keep agent-specific CLI flags, raw output parsing, configuration formats, and workarounds in
+that agent's adapter or agent-specific helpers. Shared code must use protocols and normalised
+models, not agent-name branches, concrete-adapter checks, private adapter state, or copied
+agent-specific logic. Host-specific terminal/process details belong in execution hosts.
+Concrete agent-adapter imports are permitted only in `shell.py` for construction/selection;
+shared helpers under `adapters/` are not exempt. `tests/unit/test_architecture.py` checks static
+imports of `adapters/*_adapter.py`; review must catch implementation details without such imports.
+If a shared contract cannot express a feature, discuss the boundary change before adding a
+workaround or weakening the test.
+
 ## Supported Agents
 
 - [x] Claude Code
