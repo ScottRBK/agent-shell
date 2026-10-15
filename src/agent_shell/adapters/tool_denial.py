@@ -45,3 +45,9 @@ def _dedup(items: list[str]) -> list[str]:
     """Drop duplicates while preserving first-seen order."""
     seen: set[str] = set()
     return [x for x in items if not (x in seen or seen.add(x))]
+
+
+def reject_interactive_tools(*, allowed_tools: list[str] | None) -> None:
+    """Reject a tool selection when the adapter cannot enforce it interactively."""
+    if allowed_tools is not None:
+        raise NotImplementedError("Interactive allowed_tools is not implemented for this harness")

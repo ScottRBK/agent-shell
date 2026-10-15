@@ -10,12 +10,15 @@ from pathlib import Path
 from typing import AsyncIterator
 from urllib.parse import urlsplit
 
+from agent_shell.ports.resources import ResourceLaunch
+from agent_shell.models.resources import SessionResources
+from agent_shell.adapters.pi_resources import install_session_package
 from agent_shell.adapters.health import run_health_probe
 from agent_shell.adapters.model_discovery import decode_model_output, run_model_command
 from agent_shell.adapters.process_failure import process_failure_event
 from agent_shell.adapters.response import collect_response
 from agent_shell.adapters.stderr_format import format_stderr
-from agent_shell.adapters.tool_denial import resolve_disallowed_tools
+from agent_shell.adapters.tool_denial import reject_interactive_tools, resolve_disallowed_tools
 from agent_shell.execution import (
     ExecutionHost,
     IsolationPolicy,
@@ -23,7 +26,6 @@ from agent_shell.execution import (
     NoIsolation,
 )
 from agent_shell.models.agent import (
-    AgentResponse,
     HealthCheckResult,
     MCPServerSpec,
     PackageSpec,
@@ -115,14 +117,74 @@ def _failure_reason(message: dict) -> str:
 
 
 class PiAdapter:
+    async def prepare_resources(
+        self, resources: SessionResources, cwd: str, directory: Path,
+        *, auto_approve: bool | None = None,
+    ) -> ResourceLaunch:
+        if resources.plugins:
+            raise NotImplementedError("Pi uses extensions/packages, not plugins")
+        if resources.inherit_personal_resources != resources.inherit_project_resources:
+            raise NotImplementedError("Pi can exclude personal and project resources only together")
+        if resources.mcp_servers:
+            raise NotImplementedError("Pi supports only mcp_servers=[] for session MCP selection")
+        args = []
+        if not resources.inherit_personal_resources:
+            if resources.mcp_servers is None:
+                raise NotImplementedError(
+                    "Pi resource exclusion requires mcp_servers=[]; "
+                    "its MCP extension is disabled too"
+                )
+            args += ["--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes",
+                     "--offline"]
+        if resources.mcp_servers is not None:
+            args += ["--no-mcp"]
+        if not resources.include_instruction_files:
+            args += ["--no-context-files"]
+        if not resources.include_home_system_prompt:
+            args += ["--system-prompt", self._project_system_prompt(cwd, auto_approve)]
+        sources = self._session_package_sources(resources.packages, cwd)
+        for source in sources:
+            path = (await install_session_package(source)
+                    if source.startswith(_PACKAGE_REMOTE_PREFIXES) else source)
+            args += ["--extension", path]
+        for skill in resources.skills:
+            args += ["--skill", skill]
+        for extension in resources.extensions:
+            args += ["--extension", extension]
+        return ResourceLaunch(args)
+
+    @staticmethod
+    def _session_package_sources(packages: list[PackageSpec], cwd: str) -> list[str]:
+        # Validate EVERY source before the first install can change the cache.
+        sources = []
+        for package in packages:
+            source = package.source
+            if not source.startswith(_PACKAGE_REMOTE_PREFIXES):
+                source = str(Path(os.path.abspath(Path(cwd) / Path(source).expanduser())))
+            sources.append(_package_source(source, installing=True))
+        if os.name != "posix" and any(s.startswith(_PACKAGE_REMOTE_PREFIXES) for s in sources):
+            raise NotImplementedError("Pi session package installation requires POSIX file locks")
+        return sources
+
+    @staticmethod
+    def _project_system_prompt(cwd: str, auto_approve: bool | None) -> str:
+        # Empty input suppresses discovery and retains Pi's built-in prompt. Preserve
+        # a project override: the trust flag still controls whether Pi may load it.
+        project_prompt = Path(os.path.abspath(cwd)) / ".pi" / "SYSTEM.md"
+        if project_prompt.exists() and auto_approve is None:
+            raise NotImplementedError(
+                "Pi interactive home prompt exclusion with project SYSTEM.md is unsupported"
+            )
+        return str(project_prompt) if project_prompt.exists() and auto_approve else ""
+
+    validate_interactive = staticmethod(reject_interactive_tools)
+
     def prepare_interactive(
         self, directory: Path, *, prompt: str | None, model: str | None,
         effort: str | None, session_id: str | None, allowed_tools: list[str] | None = None,
+        resource_launch: ResourceLaunch | None = None,
     ):
-        if allowed_tools is not None:
-            raise NotImplementedError(
-                "Interactive allowed_tools is not implemented for this harness"
-            )
+        self.validate_interactive(allowed_tools=allowed_tools)
 
         from agent_shell.interactive import InteractiveLaunch
 
@@ -147,6 +209,8 @@ class PiAdapter:
             command += ["--model", model]
         if effort:
             command += ["--thinking", effort]
+        if resource_launch is not None:
+            command += resource_launch.arguments
         if prompt is not None:
             command += ["--", prompt]
 
@@ -189,6 +253,7 @@ class PiAdapter:
         return InteractiveLaunch(
             command, parse,
             frozenset({"text", "session_id", "tool_use", "turn_complete", "output_tokens", "cost"}),
+            env=resource_launch.env if resource_launch else None,
         )
 
     def __init__(
@@ -204,30 +269,7 @@ class PiAdapter:
             isolation_policy if isolation_policy is not None else NoIsolation()
         )
 
-    async def execute(
-            self,
-            cwd: str,
-            prompt: str,
-            allowed_tools: list[str] | None = None,
-            model: str | None = None,
-            effort: str | None = None,
-            include_thinking: bool = False,
-            auto_approve: bool = True,
-            session_id: str | None = None,
-            disallowed_tools: list[str] | None = None,
-    ) -> AgentResponse:
-        return await collect_response(
-            self,
-            cwd,
-            prompt,
-            allowed_tools=allowed_tools,
-            model=model,
-            effort=effort,
-            include_thinking=include_thinking,
-            auto_approve=auto_approve,
-            session_id=session_id,
-            disallowed_tools=disallowed_tools,
-        )
+    execute = collect_response
 
     async def stream(
             self,
@@ -240,6 +282,7 @@ class PiAdapter:
             auto_approve: bool = True,
             session_id: str | None = None,
             disallowed_tools: list[str] | None = None,
+            resource_launch: ResourceLaunch | None = None,
     ) -> AsyncIterator[StreamEvent]:
         native, unsupported = resolve_disallowed_tools(disallowed_tools, _DISALLOWED_TOOL_MAP)
         if unsupported:
@@ -260,6 +303,9 @@ class PiAdapter:
             allowed_tools=allowed_tools,
             disallowed_native=native,
         )
+
+        if resource_launch is not None:
+            cmd[-1:-1] = resource_launch.arguments
 
         logger.debug("Command: %s", cmd)
         logger.info("Process started (cwd=%s)", os.path.abspath(cwd))

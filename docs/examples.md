@@ -559,13 +559,84 @@ failures raise `RuntimeError` with Pi's diagnostic. Invalid sources raise `Value
 Install and remove accept `timeout=120.0` (seconds). A timeout raises `RuntimeError`; task
 cancellation propagates `asyncio.CancelledError`. Both clean up the command's process group.
 Pi owns installation and persistence; failed or cancelled operations may leave downloaded files.
-Per-run resource selection and individual enable/disable controls are outside this initial API.
+Per-session resource selection uses the separate `resources` argument below. Individual persistent
+enable/disable controls remain outside the package-management API.
 Pi extensions execute with the process's permissions; this API does not sandbox their code.
 
 See [Pi packages][pi-packages] for native package behaviour.
 
 [pi-packages]:
   https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md
+
+## Per-session resources
+
+Choose resources when launching a session. Local paths must already exist and are resolved against
+`cwd`. Use each harness's native format; see the
+[seven-agent support table](development/agent_parameter_comparison.md#per-session-resources).
+
+```python
+from agent_shell.models.agent import AgentType, PackageSpec
+from agent_shell.models.resources import SessionResources
+from agent_shell.shell import AgentShell
+
+resources = SessionResources(
+    skills=["./roles/foreman/skills"],
+    extensions=["./roles/foreman/dispatch.ts"],
+    packages=[PackageSpec(source="./roles/foreman/package")],
+    mcp_servers=[],
+    inherit_personal_resources=False,
+    inherit_project_resources=False,
+    include_instruction_files=True,  # Keep AGENTS.md / CLAUDE.md.
+    include_home_system_prompt=False,  # Exclude ~/.pi/agent/SYSTEM.md.
+)
+
+shell = AgentShell(AgentType.PI)
+result = await shell.execute(
+    cwd="/work/my-project", prompt="Assign the next task.", resources=resources,
+)
+
+# Retain the original selection when resuming, including across fresh AgentShell objects.
+followup = await shell.execute(
+    cwd="/work/my-project", prompt="Check progress.",
+    session_id=result.session_id, resources=resources,
+)
+```
+
+To select a remote Pi package, use an exact version such as
+`PackageSpec("npm:@example/foreman-tools@1.2.3")` (replace this illustrative name).
+Missing selected packages are installed automatically before agent work, without registering them
+in your personal settings. Existing AgentShell cache entries are reused. See
+[package preparation](development/package_management.md#per-session-package-preparation).
+
+The same `resources=` argument works with `stream()` and `open_interactive()`; an interactive host
+such as `TmuxExecutionHost` is still required. Consume interactive events so AgentShell can record
+the session ID for resume. A selected session cannot resume with omitted or different selections.
+For MCP servers, selection means their names: the same names can resume with updated credentials,
+URLs, commands, arguments or transport settings. Adding, removing or renaming a server is rejected.
+Resource paths, package sources and discovery/instruction switches must still match.
+Existing calls that never selected resources retain their usual resume behaviour.
+
+For Claude, Copilot or Cursor, supply a native plugin directory instead of Pi extensions:
+
+```python
+resources = SessionResources(plugins=["/roles/reviewer/native-plugin"])
+```
+
+These three adapters currently add plugins to native discovery; they reject personal/project
+exclusion. Claude also supports exact MCP selection using `mcp_servers=[MCPServerSpec(...)]`, or
+`mcp_servers=[]` for none. Other MCP combinations follow the support table. Unsupported requests
+raise before agent launch, rather than silently inheriting resources you asked to exclude.
+
+By default, both inheritance flags and both instruction flags are `True`, lists are empty, and
+`mcp_servers=None` keeps native MCP discovery. Pi requires both inheritance flags to match and an
+explicit empty MCP list when excluding discovery. Its home-system exclusion preserves a trusted
+project `SYSTEM.md` for headless runs; interactive sessions reject that combination when a project
+`SYSTEM.md` exists. It does not exclude `APPEND_SYSTEM.md`.
+
+Temporary launch files are removed after completion, cancellation, or interactive close. When
+stopping a stream early, close it explicitly (for example with `contextlib.aclosing`) so cleanup
+finishes promptly. Keep selected local resources available for the session and later resumes.
+Resource selection does not freeze file contents or prevent extensions from accessing the network.
 
 ## Logging
 

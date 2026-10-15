@@ -1,9 +1,12 @@
 import asyncio
+from contextlib import aclosing
 import os
 from pathlib import Path
 from typing import AsyncIterator
 
-from agent_shell.adapters.agent_adapter_protocol import AgentAdapter
+from agent_shell.ports.agent import AgentAdapter
+from agent_shell.models.resources import SessionResources
+from agent_shell.resources import ResourceSelection, resource_session
 from agent_shell.adapters.claude_code_adapter import ClaudeCodeAdapter
 from agent_shell.adapters.codex_adapter import CodexAdapter
 from agent_shell.adapters.copilot_cli_adapter import CopilotCLIAdapter
@@ -11,6 +14,7 @@ from agent_shell.adapters.cursor_adapter import CursorAdapter
 from agent_shell.adapters.grok_adapter import GrokAdapter
 from agent_shell.adapters.opencode_adapter import OpenCodeAdapter
 from agent_shell.adapters.pi_adapter import PiAdapter
+from agent_shell.adapters.response import collect_stream_response
 from agent_shell.execution import (
     ExecutionHost,
     IsolationPolicy,
@@ -74,6 +78,7 @@ class AgentShell():
             if isolation_policy is not None
             else _isolation_policy_from_environment()
         )
+        self._agent_type = agent_type
         self._adapter = self._resolve_adapter(agent_type=agent_type)
 
     def _resolve_adapter(self, agent_type: AgentType) -> AgentAdapter:
@@ -91,6 +96,7 @@ class AgentShell():
         self, cwd: str, *, prompt: str | None = None, model: str | None = None,
         effort: str | None = None, session_id: str | None = None,
         allowed_tools: list[str] | None = None,
+        resources: SessionResources | None = None,
     ):
         """Open the real harness UI (experimental). The caller owns the returned session.
 
@@ -107,10 +113,12 @@ class AgentShell():
             raise NotImplementedError("This adapter does not support interactive sessions")
         if not isinstance(self.execution_host, InteractiveExecutionHost):
             raise NotImplementedError("This execution host does not support interactive sessions")
+        selection = ResourceSelection(self._agent_type, cwd, resources, session_id)
         return await open_interactive_session(
             self._adapter, self.execution_host, self.isolation_policy, cwd,
             prompt=prompt, model=model, effort=effort,
-            session_id=session_id, allowed_tools=allowed_tools,
+            session_id=session_id, allowed_tools=allowed_tools, resources=selection.resources,
+            on_session=selection.record,
         )
 
     async def attach_interactive(self, target: object) -> InteractiveConnection:
@@ -140,26 +148,22 @@ class AgentShell():
             auto_approve: bool = True,
             session_id: str | None = None,
             disallowed_tools: list[str] | None = None,
+            resources: SessionResources | None = None,
     ) -> AgentResponse:
 
-        if not Path(cwd).is_dir():
-            raise ValueError(f"Directory does not exist: {cwd}")
-
-        try:
-            return await self._adapter.execute(
-                    cwd=cwd,
-                    prompt=prompt,
-                    allowed_tools=allowed_tools,
-                    disallowed_tools=disallowed_tools,
-                    model=model,
-                    effort=effort,
-                    include_thinking=include_thinking,
-                    auto_approve=auto_approve,
-                    session_id=session_id,
-            )
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            await self._adapter.cancel()
-            raise
+        async with aclosing(self.stream(
+                cwd=cwd,
+                prompt=prompt,
+                allowed_tools=allowed_tools,
+                disallowed_tools=disallowed_tools,
+                model=model,
+                effort=effort,
+                include_thinking=include_thinking,
+                auto_approve=auto_approve,
+                session_id=session_id,
+                resources=resources,
+        )) as stream:
+            return await collect_stream_response(stream)
 
     async def stream(
             self,
@@ -172,24 +176,32 @@ class AgentShell():
             auto_approve: bool = True,
             session_id: str | None = None,
             disallowed_tools: list[str] | None = None,
+            resources: SessionResources | None = None,
     ) -> AsyncIterator[StreamEvent]:
 
         if not Path(cwd).is_dir():
             raise ValueError(f"Directory does not exist: {cwd}")
 
+        selection = ResourceSelection(self._agent_type, cwd, resources, session_id)
         try:
-            async for chunk in self._adapter.stream(
-                    cwd=cwd,
-                    prompt=prompt,
-                    allowed_tools=allowed_tools,
-                    disallowed_tools=disallowed_tools,
-                    model=model,
-                    effort=effort,
-                    include_thinking=include_thinking,
-                    auto_approve=auto_approve,
-                    session_id=session_id,
-            ):
-                yield chunk
+            async with resource_session(
+                self._adapter, cwd, selection.resources, auto_approve=auto_approve,
+            ) as launch:
+                async with aclosing(self._adapter.stream(
+                        cwd=cwd,
+                        prompt=prompt,
+                        allowed_tools=allowed_tools,
+                        disallowed_tools=disallowed_tools,
+                        model=model,
+                        effort=effort,
+                        include_thinking=include_thinking,
+                        auto_approve=auto_approve,
+                        session_id=session_id,
+                        **({"resource_launch": launch} if launch is not None else {}),
+                )) as stream:
+                    async for chunk in stream:
+                        selection.record(chunk.session_id)
+                        yield chunk
         except (KeyboardInterrupt, asyncio.CancelledError):
             await self._adapter.cancel()
             raise

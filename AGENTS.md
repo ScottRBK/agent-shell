@@ -1,6 +1,8 @@
 # Agent Shell
 
-A lightweight, async Python package that executes CLI coding agents headlessly and returns output through a unified interface. Each agent's CLI differences are hidden behind a common adapter protocol, so consuming code never changes regardless of which agent is running underneath.
+A lightweight, async Python package that executes CLI coding agents headlessly and returns output
+through a unified interface. Each agent's CLI differences are hidden behind a common adapter
+protocol, so consuming code never changes regardless of which agent is running underneath.
 
 ## Architecture
 
@@ -13,8 +15,11 @@ that agent's adapter or agent-specific helpers. Shared code must use protocols a
 models, not agent-name branches, concrete-adapter checks, private adapter state, or copied
 agent-specific logic. Host-specific terminal/process details belong in execution hosts.
 Concrete agent-adapter imports are permitted only in `shell.py` for construction/selection;
-shared helpers under `adapters/` are not exempt. `tests/unit/test_architecture.py` checks static
-imports of `adapters/*_adapter.py`; review must catch implementation details without such imports.
+shared helpers under `adapters/` are not exempt. Import Linter contracts in `pyproject.toml`
+enforce the [dependency boundaries](docs/architecture/dependency_boundaries.md), including
+indirect imports. New inner code uses `ports/`, not implementation-bearing compatibility
+facades. New top-level modules and adapter helpers must be classified in the contracts.
+Review must still catch copied agent-specific logic and dynamic imports.
 If a shared contract cannot express a feature, discuss the boundary change before adding a
 workaround or weakening the test.
 
@@ -75,12 +80,13 @@ scope, and validation details.
 
 ## Test Philosophy
 
-Tests validate real functionality, not code coverage metrics. Three tiers, each with a distinct purpose:
+Tests validate real functionality, not code coverage metrics. Three tiers, each with a distinct
+purpose:
 
 | Tier | Scope | Runs in CI | Real CLI calls |
 |------|-------|-----------|----------------|
-| **Unit** | Isolated functions (`_parse_event`, adapter resolution, input validation) | Yes | No |
-| **Integration** | Full flow through `AgentShell` -> `Adapter` -> parser with mocked subprocess | Yes | No |
+| **Unit** | Isolated parsing, adapter resolution, input validation | Yes | No |
+| **Integration** | Shell -> adapter -> parser, with mocked agent subprocess | Yes | No |
 | **E2E** | Real CLI calls; usually real API costs | No (local only) | Yes |
 
 The model-discovery E2E test is the exception: it calls all seven real CLIs but only reads
@@ -93,8 +99,11 @@ spend. E2E tests remain local smoke tests for the real agents.
 All tests follow the **AAA pattern** (Arrange, Act, Assert).
 
 ```bash
-# CI suite (unit + integration)
-uv run pytest tests/unit tests/integration -v
+# Architecture contracts (development dependency only)
+uv run --locked lint-imports --no-cache
+
+# CI suite (unit + integration, including deliberate boundary violations in temp copies)
+uv run --locked pytest tests/unit tests/integration -v
 
 # Full suite including E2E (requires agent CLI + credentials)
 uv run pytest -v
@@ -102,5 +111,5 @@ uv run pytest -v
 
 ## CI/CD
 
-- **CI**: Runs unit + integration tests on every push and PR
-- **Build**: Triggers on `v*` tags, runs tests then builds sdist + wheel artifacts for release
+- **CI**: Runs architecture contracts and unit + integration tests on every push and PR
+- **Build**: Triggers on `v*` tags, runs contracts/tests then builds release artifacts

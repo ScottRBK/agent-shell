@@ -10,42 +10,25 @@ import asyncio
 from collections import deque
 import contextlib
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
 import shutil
 import sys
 import tempfile
-from typing import Protocol, runtime_checkable
 
-from agent_shell.execution import IsolationPolicy
+from agent_shell.ports.execution import IsolationPolicy
+from agent_shell.ports.interactive import (
+    InteractiveAdapter as InteractiveAdapter,
+    InteractiveAttachmentHost as InteractiveAttachmentHost,
+    InteractiveExecutionHost as InteractiveExecutionHost,
+    InteractiveLaunch as InteractiveLaunch,
+    InteractiveTerminal as InteractiveTerminal,
+    TerminalControl as TerminalControl,
+)
 from agent_shell.models.agent import StreamEvent
-
-
-class TerminalControl(Protocol):
-    """Input and inspection, without claiming ownership or process-exit information."""
-
-    closed: bool
-
-    async def capture_screen(self) -> str: ...
-    async def send_text(self, text: str, *, submit: bool = False) -> None: ...
-    async def send_key(self, key: str) -> None: ...
-    async def close(self) -> None: ...
-
-
-class InteractiveTerminal(TerminalControl, Protocol):
-    returncode: int | None
-
-    async def resize(self, *, columns: int, rows: int) -> None: ...
-    async def wait(self) -> int: ...
-
-
-@runtime_checkable
-class InteractiveAttachmentHost(Protocol):
-    """Optional capability, independent of launching interactive processes."""
-
-    async def attach_interactive(self, target: object) -> TerminalControl: ...
+from agent_shell.models.resources import SessionResources
+from agent_shell.resources import snapshot_resources
 
 
 class InteractiveConnection:
@@ -66,32 +49,6 @@ class InteractiveConnection:
 
     async def __aexit__(self, *exc) -> None:
         await self.close()
-
-
-@runtime_checkable
-class InteractiveExecutionHost(Protocol):
-    async def launch_interactive(
-        self, command: list[str], cwd: str, *, env: dict[str, str] | None = None,
-        isolation_policy: IsolationPolicy | None = None,
-    ) -> InteractiveTerminal: ...
-
-
-@dataclass
-class InteractiveLaunch:
-    command: list[str]
-    parse_event: Callable[[dict], list[StreamEvent]]
-    capabilities: frozenset[str]
-    env: dict[str, str] | None = None
-    event_path: Callable[[], Path | None] | None = None
-    event_offset: int = 0
-
-
-@runtime_checkable
-class InteractiveAdapter(Protocol):
-    def prepare_interactive(
-        self, directory: Path, *, prompt: str | None, model: str | None,
-        effort: str | None, session_id: str | None, allowed_tools: list[str] | None,
-    ) -> InteractiveLaunch: ...
 
 
 def event_writer_command(directory: Path) -> list[str]:
@@ -203,14 +160,33 @@ async def open_interactive_session(
     adapter: InteractiveAdapter, host: InteractiveExecutionHost, policy: IsolationPolicy,
     cwd: str, *, prompt: str | None, model: str | None, effort: str | None,
     session_id: str | None, allowed_tools: list[str] | None = None,
+    resources: SessionResources | None = None,
+    on_session: Callable[[str | None], None] | None = None,
 ) -> InteractiveSession:
+    adapter.validate_interactive(allowed_tools=allowed_tools)
     directory = Path(tempfile.mkdtemp(prefix="agentshell-events-"))
     try:
         (directory / "events.jsonl").touch(mode=0o600)
+        resource_launch = None
+        if resources is not None:
+            resource_launch = await adapter.prepare_resources(
+                snapshot_resources(resources, cwd), cwd, directory,
+            )
         launch = adapter.prepare_interactive(
             directory, prompt=prompt, model=model, effort=effort,
             session_id=session_id, allowed_tools=allowed_tools,
+            **({"resource_launch": resource_launch} if resource_launch is not None else {}),
         )
+        if on_session is not None:
+            parser = launch.parse_event
+
+            def parse_with_selection(record: dict) -> list[StreamEvent]:
+                events = parser(record)
+                for event in events:
+                    on_session(event.session_id)
+                return events
+
+            launch.parse_event = parse_with_selection
         terminal = await host.launch_interactive(
             launch.command, cwd, env={**os.environ, **(launch.env or {})}, isolation_policy=policy,
         )

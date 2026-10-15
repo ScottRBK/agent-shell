@@ -13,7 +13,7 @@ from agent_shell.execution import (
     NativeExecutionHost,
     NoIsolation,
 )
-from agent_shell.models.agent import AgentResponse, AgentType
+from agent_shell.models.agent import AgentType, StreamEvent
 from agent_shell.shell import AgentShell
 
 
@@ -217,11 +217,11 @@ class TestDisallowedToolsForwarding:
         shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
         recorded: dict = {}
 
-        async def fake_execute(**kwargs):
+        async def fake_stream(**kwargs):
             recorded.update(kwargs)
-            return AgentResponse(response="", cost=0.0)
+            yield StreamEvent(type="result", content="ok")
 
-        shell._adapter.execute = fake_execute
+        shell._adapter.stream = fake_stream
 
         # Act
         await shell.execute(cwd="/tmp", prompt="hi", disallowed_tools=["bash"])
@@ -253,11 +253,11 @@ class TestDisallowedToolsForwarding:
         shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
         recorded: dict = {}
 
-        async def fake_execute(**kwargs):
+        async def fake_stream(**kwargs):
             recorded.update(kwargs)
-            return AgentResponse(response="", cost=0.0)
+            yield StreamEvent(type="result", content="ok")
 
-        shell._adapter.execute = fake_execute
+        shell._adapter.stream = fake_stream
 
         # Act
         await shell.execute(cwd="/tmp", prompt="hi")
@@ -272,11 +272,11 @@ class TestDisallowedToolsForwarding:
         shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
         recorded: dict = {}
 
-        async def fake_execute(**kwargs):
+        async def fake_stream(**kwargs):
             recorded.update(kwargs)
-            return AgentResponse(response="", cost=0.0)
+            yield StreamEvent(type="result", content="ok")
 
-        shell._adapter.execute = fake_execute
+        shell._adapter.stream = fake_stream
 
         # Act — fourth positional arg is the model.
         await shell.execute("/tmp", "hi", ["Read"], "sonnet")

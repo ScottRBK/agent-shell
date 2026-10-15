@@ -7,6 +7,9 @@ import warnings
 from pathlib import Path
 from typing import AsyncIterator
 
+from agent_shell.models.resources import SessionResources
+from agent_shell.ports.resources import ResourceLaunch
+from agent_shell.resources import require_resource_support
 from agent_shell.adapters.health import run_health_probe
 from agent_shell.adapters.model_discovery import (
     start_model_process,
@@ -14,7 +17,7 @@ from agent_shell.adapters.model_discovery import (
 )
 from agent_shell.adapters.process_failure import process_failure_event
 from agent_shell.adapters.response import collect_response
-from agent_shell.adapters.tool_denial import resolve_disallowed_tools
+from agent_shell.adapters.tool_denial import reject_interactive_tools, resolve_disallowed_tools
 from agent_shell.execution import (
     ExecutionHost,
     IsolationPolicy,
@@ -22,7 +25,6 @@ from agent_shell.execution import (
     NoIsolation,
 )
 from agent_shell.models.agent import (
-    AgentResponse,
     HealthCheckResult,
     MCPServerSpec,
     PackageSpec,
@@ -140,14 +142,30 @@ def _json_rpc_result(response: dict) -> dict:
 
 
 class CopilotCLIAdapter:
+    async def prepare_resources(
+        self, resources: SessionResources, cwd: str, directory: Path,
+        *, auto_approve: bool | None = None,
+    ) -> ResourceLaunch:
+        require_resource_support(
+            resources, frozenset({"plugins", "include_instruction_files"}), "Copilot CLI",
+        )
+        args = []
+        for plugin in resources.plugins:
+            if not Path(plugin).is_dir():
+                raise ValueError("Plugin paths must be directories")
+            args += ["--plugin-dir", plugin]
+        if not resources.include_instruction_files:
+            args += ["--no-custom-instructions"]
+        return ResourceLaunch(args)
+
+    validate_interactive = staticmethod(reject_interactive_tools)
+
     def prepare_interactive(
         self, directory: Path, *, prompt: str | None, model: str | None,
         effort: str | None, session_id: str | None, allowed_tools: list[str] | None = None,
+        resource_launch: ResourceLaunch | None = None,
     ):
-        if allowed_tools is not None:
-            raise NotImplementedError(
-                "Interactive allowed_tools is not implemented for this harness"
-            )
+        self.validate_interactive(allowed_tools=allowed_tools)
 
         from agent_shell.interactive import InteractiveLaunch, event_writer_command
         import shlex
@@ -171,11 +189,15 @@ class CopilotCLIAdapter:
             command += ["--effort", effort]
         if session_id:
             command += ["--resume=" + session_id]
+        if resource_launch is not None:
+            command += resource_launch.arguments
         if prompt is not None:
             command += ["--interactive", prompt]
-        return InteractiveLaunch(command, self.parse_interactive_event, frozenset({
-            "session_id", "tool_use", "stop_requested",
-        }))
+        return InteractiveLaunch(
+            command, self.parse_interactive_event,
+            frozenset({"session_id", "tool_use", "stop_requested"}),
+            env=resource_launch.env if resource_launch else None,
+        )
 
     def parse_interactive_event(self, event: dict) -> list[StreamEvent]:
         name = event.get("hook_event_name")
@@ -207,30 +229,7 @@ class CopilotCLIAdapter:
             isolation_policy if isolation_policy is not None else NoIsolation()
         )
 
-    async def execute(
-            self,
-            cwd: str,
-            prompt: str,
-            allowed_tools: list[str] | None = None,
-            model: str | None = None,
-            effort: str | None = None,
-            include_thinking: bool = False,
-            auto_approve: bool = True,
-            session_id: str | None = None,
-            disallowed_tools: list[str] | None = None,
-    ) -> AgentResponse:
-        return await collect_response(
-            self,
-            cwd,
-            prompt,
-            allowed_tools=allowed_tools,
-            model=model,
-            effort=effort,
-            include_thinking=include_thinking,
-            auto_approve=auto_approve,
-            session_id=session_id,
-            disallowed_tools=disallowed_tools,
-        )
+    execute = collect_response
 
     async def stream(
             self,
@@ -243,6 +242,7 @@ class CopilotCLIAdapter:
             auto_approve: bool = True,
             session_id: str | None = None,
             disallowed_tools: list[str] | None = None,
+            resource_launch: ResourceLaunch | None = None,
     ) -> AsyncIterator[StreamEvent]:
         effort = _normalize_effort(effort)
         cmd = [
@@ -283,6 +283,9 @@ class CopilotCLIAdapter:
         if include_thinking:
             cmd.append("--enable-reasoning-summaries")
 
+        if resource_launch is not None:
+            cmd.extend(resource_launch.arguments)
+
         logger.debug("Command: %s", cmd)
         logger.info("Process started (cwd=%s)", os.path.abspath(cwd))
 
@@ -290,6 +293,8 @@ class CopilotCLIAdapter:
             cmd,
             cwd=os.path.abspath(cwd),
             isolation_policy=self._isolation_policy,
+            **({"env": {**os.environ, **resource_launch.env}}
+               if resource_launch is not None and resource_launch.env else {}),
         )
 
         self._active_processes.append(process)
