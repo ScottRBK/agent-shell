@@ -9,7 +9,10 @@
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
 
-    pyproject-nix.url = "github:pyproject-nix/pyproject.nix";
+    pyproject-nix = {
+      url = "github:pyproject-nix/pyproject.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
 
     uv2nix = {
       url = "github:pyproject-nix/uv2nix";
