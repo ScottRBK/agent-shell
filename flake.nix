@@ -202,6 +202,12 @@
 
           packages = {
             agent-shell-py = thisProject;
+            # The library inside a runnable python environment. Consumers that
+            # want `python -c "import agent_shell"` to work with no PYTHONPATH
+            # juggling should install this, not the bare site-packages output:
+            # nixpkgs' python-with-packages only collects derivations it marks as
+            # python modules, which a uv2nix package is not.
+            env = runtimeEnv;
             default = thisProject;
           };
 
