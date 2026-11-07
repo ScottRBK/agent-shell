@@ -99,8 +99,8 @@ carry a one-line reason.
 | Architectures | `x86_64-linux`, `aarch64-linux`, `aarch64-darwin` | `x86_64-darwin` omitted as deprecated upstream. No aarch64 builder exists today, so `nix flake check` reports those two as omitted systems — listing them is intent, not verification |
 | Non-flake entry point | `flake-compat` (`default.nix` + `shell.nix`) | house default: costs a flake-native user nothing, and the entry points delegate rather than duplicate |
 | Source filtering | allow-list `lib.fileset.toSource` (`pyproject.toml`, `README.md`, `LICENSE`, `src/`) | tree is ours; docs-only commits leave the package drv hash stable |
-| Binary cache | public Cachix (follow-up PR) | publish on `main` only, pull-only on PRs, SHA-pinned actions, loud missing-token check |
-| CI | unchanged GitHub workflows | Nix jobs arrive with the Cachix follow-up |
+| Binary cache | none yet — planned as a separate follow-up | intended shape is a public cache published from the default branch only, with a pull-only PR gate, SHA-pinned actions and a loud failure if the token is missing; not wired because the cache itself does not exist yet |
+| CI | unchanged GitHub workflows | Nix jobs would arrive with the cache follow-up, not before it |
 
 `flake.lock` node count: **8**, with a single `nixpkgs` node — every input
 that can follow our nixpkgs does, including `flake-parts -> nixpkgs-lib` and
