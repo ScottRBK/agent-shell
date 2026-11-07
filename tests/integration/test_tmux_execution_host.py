@@ -31,7 +31,7 @@ def fake_tmux(monkeypatch, tmp_path):
     bin_dir.mkdir()
     fake = bin_dir / "tmux"
     fake.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import os, pathlib, signal, subprocess, sys\n"
         "registry = pathlib.Path(os.environ['AGENTSHELL_FAKE_TMUX_REGISTRY'])\n"
         "args = sys.argv[1:]\n"
@@ -665,7 +665,7 @@ async def test_agentshell_execution_surfaces_use_tmux_host_without_adapter_chang
     bin_dir.mkdir()
     fake_cli = bin_dir / "claude"
     fake_cli.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import json\n"
         "print(json.dumps({'type': 'system', 'session_id': 'tmux-session'}), flush=True)\n"
         "print(json.dumps({'type': 'assistant', 'message': {'content': [\n"
@@ -709,7 +709,7 @@ async def test_abandoned_agentshell_stream_cancels_the_tmux_owned_process(
     bin_dir.mkdir()
     fake_cli = bin_dir / "claude"
     fake_cli.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import fcntl, json, os, time\n"
         "lock_file = open(os.environ['AGENTSHELL_TMUX_LOCK_FILE'], 'w')\n"
         "fcntl.flock(lock_file, fcntl.LOCK_EX)\n"

@@ -18,7 +18,7 @@ from tests.integration.test_interactive_terminal import current_tmux_terminal  #
 
 def install_cli(tmp_path, monkeypatch, name, source):
     binary = tmp_path / name
-    binary.write_text("#!/usr/bin/env python3\n" + source)
+    binary.write_text(f"#!{sys.executable}\n" + source)
     binary.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
 
