@@ -107,7 +107,60 @@
             ]
           );
 
-          thisProject = pythonSet.agent-shell-py;
+          # A9 source allow-list for the test run: tests read the package
+          # sources, pytest config, and the tests tree - nothing else.
+          testSource = lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions [
+              ./pyproject.toml
+              ./README.md
+              ./LICENSE
+              ./src
+              ./tests
+              ./examples
+            ];
+          };
+
+          # Unit + integration suite in the sandbox: no network, no
+          # credentials, no e2e. `-m "not e2e"` guards against an e2e-marked
+          # test leaking into a unit/integration directory; scoping to those
+          # two directories guards against unmarked files elsewhere.
+          # tmux is a nativeBuildInput because the interactive-terminal
+          # integration tests spawn it. Tests spawn fake CLIs via shebang
+          # scripts; the suite uses sys.executable / shutil.which paths
+          # (portable across NixOS, macOS, Linux, and the Nix sandbox).
+          tests = pkgs.stdenv.mkDerivation {
+            pname = "agent-shell-tests";
+            inherit version;
+            src = testSource;
+            nativeBuildInputs = [
+              devEnv
+              pkgs.tmux
+            ];
+            phases = [
+              "unpackPhase"
+              "checkPhase"
+              "installPhase"
+            ];
+            doCheck = true;
+            checkPhase = ''
+              runHook preCheck
+              export HOME="$TMPDIR"
+              export PYTHONPATH="$PWD/src"
+              pytest tests/unit tests/integration -m "not e2e" -q
+              runHook postCheck
+            '';
+            installPhase = ''
+              mkdir -p $out
+              echo "unit + integration suite passed" > $out/passstamp
+            '';
+          };
+
+          thisProject = pythonSet.agent-shell-py.overrideAttrs (old: {
+            passthru = (old.passthru or { }) // {
+              inherit tests;
+            };
+          });
 
           # Runtime env from the lock (default groups): the library alone.
           runtimeEnv = pythonSet.mkVirtualEnv "agent-shell-env" workspace.deps.default;
@@ -184,6 +237,10 @@
             {
               # Criterion: the build asserts zero runtime dependencies.
               zero-runtime-deps = smoke;
+              # Unit + integration only; e2e excluded by design (real CLIs,
+              # credentials, API cost). Sandbox has no network: any test that
+              # needs it fails here (fail closed).
+              inherit tests;
             };
         };
     };
