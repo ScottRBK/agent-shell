@@ -182,24 +182,19 @@
             nixfmt.enable = true;
             deadnix.enable = true;
             statix.enable = true;
-            # Python + spell hooks stay available (`pre-commit run ruff --hook-stage manual`)
-            # but are not auto-run: the repo has no lint config yet, so a default-stage
-            # hook would fail `nix flake check` on a clean checkout. Promote to default
-            # stage when the lint-config contribution lands upstream (plan 54 task 341).
-            ruff = {
-              enable = true;
-              stages = [
-                "manual"
-                "pre-push"
-              ];
-            };
-            typos = {
-              enable = true;
-              stages = [
-                "manual"
-                "pre-push"
-              ];
-            };
+            # Python + spell hooks are wired but run ONLY when invoked:
+            #   pre-commit run ruff --hook-stage manual --all-files
+            # The repo has no lint config, so a default-stage hook would fail
+            # `nix flake check` on a clean checkout and impose enforcement on an
+            # upstream that never opted in. `pre-push` is deliberately NOT used:
+            # ruff's autofix rewrote 73 source files during a push (2026-11-07),
+            # which is exactly the unrequested rewrite these stages must avoid.
+            # Promote to default stage when the lint-config contribution lands
+            # upstream (plan 54 task 341).
+            ruff.enable = true;
+            typos.enable = true;
+            ruff.stages = [ "manual" ];
+            typos.stages = [ "manual" ];
           };
 
           packages = {
