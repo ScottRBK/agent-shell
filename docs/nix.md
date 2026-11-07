@@ -28,8 +28,14 @@ tests invoke real agent CLIs and incur API costs. Run them locally with
 
 ```bash
 nix build .#agent-shell-py    # the library, installed into a python3.12 site-packages
-nix build                      # same, via packages.default
+nix build .#env               # a python interpreter with the library already inside it
 ```
+
+`#env` is what to install when something must actually run python against the
+library. `python3.withPackages` will not pick up `#agent-shell-py`: uv2nix
+packages carry no `pythonModule` marker, so an environment built that way
+imports nothing. Use `#env`, or put `#agent-shell-py` on `PYTHONPATH` when you
+are composing your own environment.
 
 ## Versioning
 
