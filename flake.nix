@@ -54,9 +54,19 @@
             inherit python;
           };
 
-          uv2nixOverlay = workspace.mkPyprojectOverlay {
+          uvLockedOverlay = workspace.mkPyprojectOverlay {
             sourcePreference = "wheel";
           };
+
+          # Forgetful pattern: default dev version; release injects the real tag.
+          # Pure builds (incl. `nix flake check`) always see "" -> "0.0.0+dev", never crash.
+          # Release: AGENT_SHELL_VERSION=$(git describe --tags) nix build --impure
+          version =
+            let
+              r = builtins.tryEval (builtins.getEnv "AGENT_SHELL_VERSION");
+              e = if r.success then r.value else "";
+            in
+            if e != "" then e else "0.0.0+dev";
 
           # A9: the tree is ours, so allow-list exactly what the build reads.
           # Keeps the derivation hash stable across docs-only commits
@@ -72,30 +82,27 @@
             ];
           };
 
-          packageOverrides = final: prev: {
-            agent-shell-py = prev.agent-shell-py.overrideAttrs (
-              old:
-              {
-                src = packageSource;
-                env = (old.env or { }) // {
-                  # The flake source carries no .git, so hatch-vcs cannot
-                  # resolve a version at build time. Placeholder until proper
-                  # version stamping (plan 54 task 339).
-                  SETUPTOOLS_SCM_PRETEND_VERSION = "0.0.0+dev";
-                };
-              }
-            );
+          # The flake source carries no .git, so hatch-vcs cannot resolve a
+          # version at build time; stamp it from the env-driven version above.
+          myOverrides = _final: prev: {
+            agent-shell-py = prev.agent-shell-py.overrideAttrs (_old: {
+              src = packageSource;
+              SETUPTOOLS_SCM_PRETEND_VERSION = version;
+            });
           };
 
           pythonSet = pythonBase.overrideScope (
             lib.composeManyExtensions [
               inputs.pyproject-build-systems.overlays.wheel
-              uv2nixOverlay
-              packageOverrides
+              uvLockedOverlay
+              myOverrides
             ]
           );
 
           thisProject = pythonSet.agent-shell-py;
+
+          # Runtime env from the lock (default groups): the library alone.
+          runtimeEnv = pythonSet.mkVirtualEnv "agent-shell-env" workspace.deps.default;
 
           # Full locked dev environment: pytest + pytest-asyncio from uv.lock.
           devEnv = pythonSet.mkVirtualEnv "agent-shell-dev-env" workspace.deps.all;
@@ -110,6 +117,7 @@
             packages = [
               devEnv
               pkgs.uv
+              pkgs.ruff
             ];
             env = {
               # uv manages the lockfile only; Nix owns the environment.
@@ -122,7 +130,7 @@
           checks =
             let
               smoke = pkgs.runCommand "agent-shell-import-smoke" { } ''
-                ${devEnv}/bin/python - <<'EOF'
+                ${runtimeEnv}/bin/python - <<'EOF'
                 import importlib.metadata as md
 
                 import agent_shell
