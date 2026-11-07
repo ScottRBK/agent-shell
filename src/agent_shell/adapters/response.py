@@ -21,6 +21,10 @@ The outcome itself is judged by the shared rule in outcome.py, so a failed run r
 AgentExecutionError — carrying that same partial data, so raising destroys nothing.
 """
 
+from collections.abc import AsyncIterator
+from contextlib import aclosing
+
+from agent_shell.ports.resources import ResourceLaunch
 from agent_shell.adapters.outcome import failure_reason
 from agent_shell.models.agent import AgentExecutionError, AgentResponse, StreamEvent
 
@@ -36,9 +40,9 @@ async def collect_response(
         auto_approve: bool = True,
         session_id: str | None = None,
         disallowed_tools: list[str] | None = None,
+        resource_launch: ResourceLaunch | None = None,
 ) -> AgentResponse:
-    chunks: list[StreamEvent] = []
-    async for event in adapter.stream(
+    async with aclosing(adapter.stream(
         cwd=cwd,
         prompt=prompt,
         allowed_tools=allowed_tools,
@@ -48,7 +52,15 @@ async def collect_response(
         include_thinking=include_thinking,
         auto_approve=auto_approve,
         session_id=session_id,
-    ):
+        **({"resource_launch": resource_launch} if resource_launch is not None else {}),
+    )) as stream:
+        return await collect_stream_response(stream)
+
+
+async def collect_stream_response(stream: AsyncIterator[StreamEvent]) -> AgentResponse:
+    """Aggregate normalised events; the caller owns the stream's lifetime."""
+    chunks: list[StreamEvent] = []
+    async for event in stream:
         chunks.append(event)
 
     text = "\n".join(e.content for e in chunks if e.type == "text")

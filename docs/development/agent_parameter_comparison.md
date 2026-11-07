@@ -1,7 +1,7 @@
 # Agent CLI Parameter Comparison
 
 Comparison of headless/non-interactive configuration across supported CLI coding agents.
-Last updated: 2026-08-08
+Last updated: 2026-10-15
 
 > The summary matrix below has no Pi, Cursor, or Grok column (it predates those adapters);
 > see the per-agent detail sections, the model-discovery section, and the
@@ -26,6 +26,118 @@ Last updated: 2026-08-08
 | **Budget** | `--max-budget-usd` | No direct flag | `--max-ai-credits` | No direct flag |
 | **Auto-approve** | `--dangerously-skip-permissions` | `--yolo` | `--yolo` / `--allow-all` | Auto in `run` mode |
 | **Session resume** | `--resume` | `exec resume <id>` | `--resume` | `-s <id>` |
+
+## Per-session resources
+
+`execute`, `stream`, and `open_interactive` accept `resources=SessionResources(...)`.
+This table describes implemented AgentShell behaviour, including gaps. Native bundles retain their
+own formats; AgentShell does not translate plugins between harnesses. No-options calls keep their
+existing discovery and authentication behaviour.
+
+| Harness | Additional local resources | Automatic selected-package installation |
+|---|---|---|
+| Claude Code | Native plugin directories (can bundle skills) | Unsupported |
+| OpenCode | Skill paths and JavaScript/TypeScript plugin files | Unsupported |
+| Copilot CLI | Native plugin directories (can bundle skills) | Unsupported |
+| Codex | Unsupported | Unsupported |
+| Pi | Skill paths, extension files, package directories/files | Pinned npm and explicit-ref Git |
+| Cursor | Native plugin directories (can bundle skills) | Unsupported |
+| Grok | Unsupported on the current root CLI adapter | Unsupported |
+
+| Harness | Exclude personal/project resources | Exact native MCP selection |
+|---|---|---|
+| Claude Code | Unsupported | Selected servers or none via strict MCP configuration |
+| OpenCode | Unsupported | Unsupported |
+| Copilot CLI | Unsupported | Unsupported |
+| Codex | Unsupported | Unsupported |
+| Pi | Both together; requires `mcp_servers=[]` | None only (`[]`) |
+| Cursor | Unsupported | Unsupported |
+| Grok | Unsupported | Unsupported |
+
+| Harness | Exclude instruction files | Exclude home `SYSTEM.md` |
+|---|---|---|
+| Claude Code | Unsupported | Unsupported option |
+| OpenCode | Unsupported | Unsupported option |
+| Copilot CLI | `--no-custom-instructions` | Unsupported option |
+| Codex | Unsupported | Unsupported option |
+| Pi | `--no-context-files` | Supported, with interactive restriction below |
+| Cursor | Unsupported | Unsupported option |
+| Grok | Unsupported | Unsupported option |
+
+An unsupported option raises `NotImplementedError`; malformed or missing paths raise `ValueError`.
+Resource combinations and all Pi package sources are checked before package installation or agent
+launch. Unsupported interactive tool options are also rejected before installation.
+This is resource configuration, not a security sandbox. Explicit extensions/plugins can
+execute code; MCP selection governs native MCP discovery, not arbitrary networking in extensions.
+Native administrative policy still applies and may reject explicitly selected resources.
+
+Important details:
+
+- `mcp_servers=None` preserves native MCP discovery. `[]` explicitly selects none. Claude writes
+  a private temporary MCP file and uses `--strict-mcp-config`, covering other MCP configurations
+  including bundled servers. It never uses `--bare`, which would bypass native saved login.
+- Pi cannot independently exclude personal or project resources. Both inheritance flags must
+  match. Exclusion disables discovered extensions, skills, prompts and themes, including built-in
+  extensions. Requiring `mcp_servers=[]` makes the loss of its built-in MCP extension explicit.
+  Selected packages still contribute their own declared resources. `--offline` prevents excluded
+  configured packages from being fetched at startup; selected remote packages are prepared first.
+- Pi keeps ordinary instruction loading unless `include_instruction_files=False`. Excluding home
+  `SYSTEM.md` restores Pi's built-in prompt, retaining a trusted project's `.pi/SYSTEM.md` in
+  headless calls. Interactive home-prompt exclusion with a project `SYSTEM.md` raises: the project
+  trust decision has not happened yet. `APPEND_SYSTEM.md` remains governed by Pi's native rules.
+- OpenCode merges additional paths/plugins into a child-only `OPENCODE_CONFIG_CONTENT`, retaining
+  inherited inline settings and the interactive observer. Empty arrays do not clear native sources;
+  `--pure` would also disable the observer and selected plugins, so exclusion is rejected.
+- Copilot and Cursor support additive plugins; existing resources and native collision precedence
+  remain active. Direct `skills` inputs are not exposed for these harnesses; use a native bundle.
+- Codex overrides for known skills/plugins do not establish arbitrary-path loading or full
+  exclusion. Grok documents plugin directories on `grok agent`/its agent protocol, while AgentShell
+  uses the root CLI. Neither is advertised as implemented per-session resource loading.
+
+Selection is fixed at launch. Resume must supply the same selected resources, exact returned session
+ID, agent and working directory. MCP servers are identified by their names, independent of list
+order. Their transport, command, arguments, URL, environment and headers may change on resume;
+these configuration values are excluded from the fingerprint. Adding, removing or renaming a server,
+or switching between inherited and explicit MCP selection, is rejected. Selected resource paths,
+package sources and discovery/instruction switches must still match. AgentShell stores a digest under
+`$XDG_STATE_HOME/agent-shell/resources` (default `~/.local/state/agent-shell/resources`).
+Set `XDG_STATE_HOME` to a writable persistent directory when no home directory is available.
+Pi package installation also needs `XDG_CACHE_HOME` in that environment for its private cache.
+Fresh launches without resources do not need this store; selected launches and resume checks fail
+before launch if neither location can be resolved. Headless calls record the selection as soon as
+the session ID arrives, preserving the binding if the call is later cancelled.
+The record follows the agent/session ID; changing the working-directory path cannot bypass it.
+It does not fingerprint MCP credentials or recover the resource list from that digest. Unknown sessions
+cannot acquire a new selection on resume. For interactive sessions, consume `session.events()` to
+record the reported session ID before closing. Attaching to a terminal cannot change its resources.
+Files at selected paths, inherited configuration, and native UI changes remain caller/harness-owned;
+selection matching is not a content snapshot or a lock against changes made inside the harness.
+The check identifies selected MCP servers; it does not inspect the individual tools they expose.
+
+Validation: CI exercises launch arguments, child environments, unsupported combinations, temporary
+file cleanup, package failures/concurrency, and resume selection. Real Pi 1.2.0 tests exercise two
+concurrent roles, instruction/system-prompt handling, unchanged settings, and native npm
+installation and reuse against a disposable local registry. They intercept input before inference.
+Subsequent read-only reviews verified native saved-login model calls through Claude Code Opus with
+MCP disabled and Pi with MCP, inherited resources, context files and home system prompt disabled.
+Live interactive resource loading remains unverified; other harnesses have launch/configuration
+tests, not live model tests. Runtime auth locations and credential environment variables are unchanged.
+
+See [invocation examples](../examples.md#per-session-resources) and
+[package preparation](package_management.md#per-session-package-preparation).
+Native evidence: [Pi CLI][resources-pi], [Claude CLI][resources-claude],
+[OpenCode config][resources-opencode], [Copilot CLI][resources-copilot],
+[Codex config][resources-codex], [Cursor CLI][resources-cursor]. Grok's installed 1.0.46
+`grok agent --help` and public plugin guide describe its separate agent-protocol route.
+
+[resources-pi]:
+  https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/cli.md
+[resources-claude]: https://code.claude.com/docs/en/cli-reference
+[resources-opencode]: https://opencode.ai/docs/config/
+[resources-copilot]:
+  https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference
+[resources-codex]: https://developers.openai.com/codex/config-reference/
+[resources-cursor]: https://cursor.com/docs/cli/reference/parameters
 
 ## Model discovery
 

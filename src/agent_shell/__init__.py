@@ -14,13 +14,15 @@ from agent_shell.terminal_window import (
     TerminalWindowUnavailableError,
     discover_terminal_launcher,
 )
-from agent_shell.tmux import TmuxExecutionHost, TmuxPlacement, TmuxUnavailableError
+from agent_shell.interactive import InteractiveConnection
+from agent_shell.tmux import TmuxExecutionHost, TmuxPlacement, TmuxTarget, TmuxUnavailableError
 
 __all__ = [
     "HerdrClient",
     "HerdrExecutionHost",
     "HerdrPane",
     "HerdrUnavailableError",
+    "InteractiveConnection",
     "SubprocessTerminalLauncher",
     "TerminalWindowExecutionHost",
     "TerminalWindowLauncher",
@@ -28,6 +30,7 @@ __all__ = [
     "TerminalWindowUnavailableError",
     "TmuxExecutionHost",
     "TmuxPlacement",
+    "TmuxTarget",
     "TmuxUnavailableError",
     "discover_terminal_launcher",
 ]

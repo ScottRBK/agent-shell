@@ -1,6 +1,7 @@
-"""Tests that AgentShell calls cancel() on CancelledError, not just KeyboardInterrupt."""
+"""Execution and streaming stop the external child when interrupted."""
 import asyncio
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -8,65 +9,24 @@ from agent_shell.shell import AgentShell
 from agent_shell.models.agent import AgentType
 
 
-class TestExecuteCancellation:
-    async def test_calls_cancel_on_keyboard_interrupt(self):
-        # Arrange
-        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
-        shell._adapter = AsyncMock()
-        shell._adapter.execute = AsyncMock(side_effect=KeyboardInterrupt)
+@pytest.mark.parametrize("mode", ["execute", "stream"])
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt, asyncio.CancelledError])
+async def test_interruption_stops_the_child(mode, interruption):
+    # Arrange: interrupt the external stdout boundary after launch.
+    run = SimpleNamespace(
+        stdout=SimpleNamespace(read=AsyncMock(side_effect=interruption)),
+        stderr=SimpleNamespace(read=AsyncMock(return_value=b"")),
+        returncode=None,
+        cancel=AsyncMock(),
+    )
+    host = SimpleNamespace(launch=AsyncMock(return_value=run))
+    shell = AgentShell(AgentType.CLAUDE_CODE, execution_host=host)
 
-        # Act / Assert
-        with pytest.raises(KeyboardInterrupt):
+    # Act / Assert
+    with pytest.raises(interruption):
+        if mode == "execute":
             await shell.execute(cwd="/tmp", prompt="test")
-
-        shell._adapter.cancel.assert_awaited_once()
-
-    async def test_calls_cancel_on_cancelled_error(self):
-        # Arrange
-        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
-        shell._adapter = AsyncMock()
-        shell._adapter.execute = AsyncMock(side_effect=asyncio.CancelledError)
-
-        # Act / Assert
-        with pytest.raises(asyncio.CancelledError):
-            await shell.execute(cwd="/tmp", prompt="test")
-
-        shell._adapter.cancel.assert_awaited_once()
-
-
-class TestStreamCancellation:
-    async def test_calls_cancel_on_keyboard_interrupt(self):
-        # Arrange
-        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
-        shell._adapter = AsyncMock()
-
-        async def _raise_ki(**kwargs):
-            raise KeyboardInterrupt
-            yield  # noqa: unreachable - makes this an async generator
-
-        shell._adapter.stream = _raise_ki
-
-        # Act / Assert
-        with pytest.raises(KeyboardInterrupt):
+        else:
             async for _ in shell.stream(cwd="/tmp", prompt="test"):
                 pass
-
-        shell._adapter.cancel.assert_awaited_once()
-
-    async def test_calls_cancel_on_cancelled_error(self):
-        # Arrange
-        shell = AgentShell(agent_type=AgentType.CLAUDE_CODE)
-        shell._adapter = AsyncMock()
-
-        async def _raise_cancel(**kwargs):
-            raise asyncio.CancelledError
-            yield  # noqa: unreachable - makes this an async generator
-
-        shell._adapter.stream = _raise_cancel
-
-        # Act / Assert
-        with pytest.raises(asyncio.CancelledError):
-            async for _ in shell.stream(cwd="/tmp", prompt="test"):
-                pass
-
-        shell._adapter.cancel.assert_awaited_once()
+    run.cancel.assert_awaited_once()

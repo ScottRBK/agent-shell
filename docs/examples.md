@@ -141,6 +141,72 @@ unidentifiable windows fail closed without falling back to a new session. If tmu
 `TmuxUnavailableError` is raised and AgentShell does not silently fall back to the native host.
 Model discovery and MCP configuration remain local management operations.
 
+### Attach to an existing interactive terminal (experimental)
+
+Use `attach_interactive()` to send input to a running agent, without launching a second process
+or resuming its conversation in another process. Initially only `TmuxExecutionHost` supports it.
+The agent must already be running interactively in the chosen tmux pane.
+
+```python
+from agent_shell import TmuxExecutionHost, TmuxTarget
+
+shell = AgentShell(AgentType.CODEX, execution_host=TmuxExecutionHost())
+
+# Capture an exact pane on the caller's tmux server. The socket can also be explicit:
+# target = await TmuxTarget.capture("%50", socket_path="/tmp/tmux-1000/default")
+target = await TmuxTarget.capture("%50")
+
+async with await shell.attach_interactive(target) as connection:
+    await connection.terminal.send_text(
+        "The build finished; please check its results.", submit=True,
+    )
+# The connection is closed. The agent and its pane are still running.
+```
+
+There are two other ways to obtain a target without raw tmux commands:
+
+- `await TmuxTarget.current()` captures `TMUX` and `TMUX_PANE` from the **target agent's pane**.
+  Capture it in a launcher/wrapper before starting the agent there, or in a helper the agent
+  launches. Pass that reference to the watcher; do not capture the watcher's unrelated pane.
+- An AgentShell-launched interactive session exposes `session.terminal.target`. Another caller
+  can attach to it while the original session keeps ownership. Closing the original session still
+  stops the agent; attachments do not extend its lifetime.
+
+`.target` is tmux-specific, not part of the portable `InteractiveTerminal` protocol. Typed callers
+can narrow the terminal with `isinstance(terminal, TmuxTerminalConnection)` before reading it;
+import that concrete class from `agent_shell.interactive_terminal`.
+
+`TmuxTarget` is a frozen dataclass containing the socket, pane ID, and server/pane process identity.
+For a watcher in another process, transfer `dataclasses.asdict(target)` using your existing
+configuration or IPC mechanism and reconstruct it with `TmuxTarget(**fields)`. No registry or queue
+service is required. The captured socket is used even if the watcher's tmux environment differs.
+
+`InteractiveConnection.terminal` supports `send_text`, `send_key`, `capture_screen`, and `close`.
+Text is pasted literally; `submit=True` presses Enter afterward. No keyboard focus is changed.
+The connection does not expose agent events, completion/usage metrics, process waiting, exit
+status, or resizing. Capture is for inspection, not structured success detection.
+
+Limits and failure behaviour:
+
+- Opening and attaching are independent host capabilities. Unsupported hosts raise
+  `NotImplementedError`; passing a non-`TmuxTarget` to tmux raises `TypeError`.
+- Attachment requires `NoIsolation()`. Other policies raise `IsolationUnavailableError`, because
+  AgentShell cannot retroactively isolate an existing process. If the process-wide default is
+  isolated, opt out explicitly for this connection with `isolation_policy=NoIsolation()`.
+- Missing tmux, missing/dead panes, and stale targets raise `TmuxUnavailableError`. Server and pane
+  identities are checked at attachment and before terminal operations; saved targets do not
+  silently follow a restarted server or a respawned pane. No replacement process is launched.
+- Disconnect is idempotent, including context exit after an exception or cancellation. It never
+  sends Ctrl-C, stops the agent, or removes the pane. Operations on a closed connection fail.
+- The target identifies a terminal, **not a verified foreground agent**. If an agent exits back to
+  a still-running shell, the pane identity may remain unchanged. The caller must ensure the intended
+  program is reading input and coordinate with human typing, permission dialogs, and other writers.
+- Queueing belongs to the agent. A manual Codex test queued messages until its next tool call;
+  this is not a guarantee for every CLI, nor a promise to wait until an entire task finishes.
+  Success means terminal input was sent, not that the agent acknowledged or completed the request.
+- Paste and Enter are separate operations. Cancellation or transport failure can leave partially
+  delivered input. AgentShell does not automatically retry and risk duplicate messages.
+
 ### Terminal-window execution host (experimental)
 
 To watch a headless run in a new local graphical terminal window, inject the host into
@@ -493,13 +559,84 @@ failures raise `RuntimeError` with Pi's diagnostic. Invalid sources raise `Value
 Install and remove accept `timeout=120.0` (seconds). A timeout raises `RuntimeError`; task
 cancellation propagates `asyncio.CancelledError`. Both clean up the command's process group.
 Pi owns installation and persistence; failed or cancelled operations may leave downloaded files.
-Per-run resource selection and individual enable/disable controls are outside this initial API.
+Per-session resource selection uses the separate `resources` argument below. Individual persistent
+enable/disable controls remain outside the package-management API.
 Pi extensions execute with the process's permissions; this API does not sandbox their code.
 
 See [Pi packages][pi-packages] for native package behaviour.
 
 [pi-packages]:
   https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md
+
+## Per-session resources
+
+Choose resources when launching a session. Local paths must already exist and are resolved against
+`cwd`. Use each harness's native format; see the
+[seven-agent support table](development/agent_parameter_comparison.md#per-session-resources).
+
+```python
+from agent_shell.models.agent import AgentType, PackageSpec
+from agent_shell.models.resources import SessionResources
+from agent_shell.shell import AgentShell
+
+resources = SessionResources(
+    skills=["./roles/foreman/skills"],
+    extensions=["./roles/foreman/dispatch.ts"],
+    packages=[PackageSpec(source="./roles/foreman/package")],
+    mcp_servers=[],
+    inherit_personal_resources=False,
+    inherit_project_resources=False,
+    include_instruction_files=True,  # Keep AGENTS.md / CLAUDE.md.
+    include_home_system_prompt=False,  # Exclude ~/.pi/agent/SYSTEM.md.
+)
+
+shell = AgentShell(AgentType.PI)
+result = await shell.execute(
+    cwd="/work/my-project", prompt="Assign the next task.", resources=resources,
+)
+
+# Retain the original selection when resuming, including across fresh AgentShell objects.
+followup = await shell.execute(
+    cwd="/work/my-project", prompt="Check progress.",
+    session_id=result.session_id, resources=resources,
+)
+```
+
+To select a remote Pi package, use an exact version such as
+`PackageSpec("npm:@example/foreman-tools@1.2.3")` (replace this illustrative name).
+Missing selected packages are installed automatically before agent work, without registering them
+in your personal settings. Existing AgentShell cache entries are reused. See
+[package preparation](development/package_management.md#per-session-package-preparation).
+
+The same `resources=` argument works with `stream()` and `open_interactive()`; an interactive host
+such as `TmuxExecutionHost` is still required. Consume interactive events so AgentShell can record
+the session ID for resume. A selected session cannot resume with omitted or different selections.
+For MCP servers, selection means their names: the same names can resume with updated credentials,
+URLs, commands, arguments or transport settings. Adding, removing or renaming a server is rejected.
+Resource paths, package sources and discovery/instruction switches must still match.
+Existing calls that never selected resources retain their usual resume behaviour.
+
+For Claude, Copilot or Cursor, supply a native plugin directory instead of Pi extensions:
+
+```python
+resources = SessionResources(plugins=["/roles/reviewer/native-plugin"])
+```
+
+These three adapters currently add plugins to native discovery; they reject personal/project
+exclusion. Claude also supports exact MCP selection using `mcp_servers=[MCPServerSpec(...)]`, or
+`mcp_servers=[]` for none. Other MCP combinations follow the support table. Unsupported requests
+raise before agent launch, rather than silently inheriting resources you asked to exclude.
+
+By default, both inheritance flags and both instruction flags are `True`, lists are empty, and
+`mcp_servers=None` keeps native MCP discovery. Pi requires both inheritance flags to match and an
+explicit empty MCP list when excluding discovery. Its home-system exclusion preserves a trusted
+project `SYSTEM.md` for headless runs; interactive sessions reject that combination when a project
+`SYSTEM.md` exists. It does not exclude `APPEND_SYSTEM.md`.
+
+Temporary launch files are removed after completion, cancellation, or interactive close. When
+stopping a stream early, close it explicitly (for example with `contextlib.aclosing`) so cleanup
+finishes promptly. Keep selected local resources available for the session and later resumes.
+Resource selection does not freeze file contents or prevent extensions from accessing the network.
 
 ## Logging
 

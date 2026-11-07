@@ -28,6 +28,106 @@ markers = [
 
 [dependency-groups]
 dev = [
+    "import-linter==2.15",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
 ]
+
+[tool.importlinter]
+root_package = "agent_shell"
+exclude_type_checking_imports = false
+
+[[tool.importlinter.contracts]]
+id = "concrete-adapters"
+name = "Only composition imports concrete agent adapters"
+type = "protected"
+protected_modules = [
+    "agent_shell.adapters.claude_code_adapter",
+    "agent_shell.adapters.codex_adapter",
+    "agent_shell.adapters.copilot_cli_adapter",
+    "agent_shell.adapters.cursor_adapter",
+    "agent_shell.adapters.grok_adapter",
+    "agent_shell.adapters.opencode_adapter",
+    "agent_shell.adapters.pi_adapter",
+]
+allowed_importers = ["agent_shell.shell"]
+
+[[tool.importlinter.contracts]]
+id = "package-layers"
+name = "Package dependencies point inward"
+type = "layers"
+containers = ["agent_shell"]
+exhaustive = true
+exhaustive_ignores = ["_version"]
+layers = [
+    "shell",
+    # adapters/ mixes integrations and shared behaviour. This group permits shared reuse;
+    # adapter-layers and shared-no-infrastructure enforce the finer role boundaries below.
+    """\
+    adapters : interactive : resources : execution : herdr : herdr_protocol : herdr_worker : \
+    interactive_terminal : interactive_worker : interactive_event_writer : \
+    process_cleanup : process_guardian : terminal_protocol : terminal_window : \
+    terminal_worker : tmux : tmux_bridge : tmux_ownership : tmux_protocol\
+    """,
+    "ports",
+    "models",
+]
+
+[[tool.importlinter.contracts]]
+id = "adapter-layers"
+name = "Agent adapters use shared helpers, not each other"
+type = "layers"
+containers = ["agent_shell.adapters"]
+exhaustive = true
+layers = [
+    """\
+    claude_code_adapter | codex_adapter | copilot_cli_adapter | cursor_adapter | \
+    grok_adapter | opencode_adapter | pi_adapter\
+    """,
+    "model_discovery | pi_resources",
+    "health : response : outcome : process_failure : stderr_format : tool_denial",
+    "agent_adapter_protocol",
+]
+
+[[tool.importlinter.contracts]]
+id = "shared-no-infrastructure"
+name = "Shared behaviour does not depend on infrastructure"
+type = "forbidden"
+source_modules = [
+    "agent_shell.interactive",
+    "agent_shell.resources",
+    "agent_shell.adapters.agent_adapter_protocol",
+    "agent_shell.adapters.health",
+    "agent_shell.adapters.response",
+    "agent_shell.adapters.outcome",
+    "agent_shell.adapters.process_failure",
+    "agent_shell.adapters.stderr_format",
+    "agent_shell.adapters.tool_denial",
+]
+forbidden_modules = [
+    "agent_shell.shell",
+    "agent_shell.adapters.model_discovery",
+    "agent_shell.execution",
+    "agent_shell.herdr",
+    "agent_shell.herdr_protocol",
+    "agent_shell.herdr_worker",
+    "agent_shell.interactive_terminal",
+    "agent_shell.interactive_worker",
+    "agent_shell.interactive_event_writer",
+    "agent_shell.process_cleanup",
+    "agent_shell.process_guardian",
+    "agent_shell.terminal_protocol",
+    "agent_shell.terminal_window",
+    "agent_shell.terminal_worker",
+    "agent_shell.tmux",
+    "agent_shell.tmux_bridge",
+    "agent_shell.tmux_ownership",
+    "agent_shell.tmux_protocol",
+]
+
+[[tool.importlinter.contracts]]
+id = "pi-resource-helper"
+name = "Only the Pi adapter imports Pi resource preparation"
+type = "protected"
+protected_modules = ["agent_shell.adapters.pi_resources"]
+allowed_importers = ["agent_shell.adapters.pi_adapter"]

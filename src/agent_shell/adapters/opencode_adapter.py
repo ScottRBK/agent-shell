@@ -7,12 +7,15 @@ import warnings
 from pathlib import Path
 from typing import AsyncIterator
 
+from agent_shell.models.resources import SessionResources
+from agent_shell.ports.resources import ResourceLaunch
+from agent_shell.resources import require_resource_support
 from agent_shell.adapters.health import run_health_probe
 from agent_shell.adapters.model_discovery import decode_model_output, run_model_command
 from agent_shell.adapters.process_failure import process_failure_event
 from agent_shell.adapters.response import collect_response
 from agent_shell.adapters.stderr_format import format_stderr
-from agent_shell.adapters.tool_denial import resolve_disallowed_tools
+from agent_shell.adapters.tool_denial import reject_interactive_tools, resolve_disallowed_tools
 from agent_shell.execution import (
     ExecutionHost,
     IsolationPolicy,
@@ -20,7 +23,6 @@ from agent_shell.execution import (
     NoIsolation,
 )
 from agent_shell.models.agent import (
-    AgentResponse,
     HealthCheckResult,
     MCPServerSpec,
     PackageSpec,
@@ -45,14 +47,33 @@ _DISALLOWED_TOOL_MAP = {
 
 
 class OpenCodeAdapter():
+    async def prepare_resources(
+        self, resources: SessionResources, cwd: str, directory: Path,
+        *, auto_approve: bool | None = None,
+    ) -> ResourceLaunch:
+        require_resource_support(resources, frozenset({"plugins", "skills"}), "OpenCode")
+        config = json.loads(os.environ.get("OPENCODE_CONFIG_CONTENT") or "{}")
+        if not isinstance(config, dict):
+            raise ValueError("OPENCODE_CONFIG_CONTENT must be a JSON object")
+        if resources.plugins:
+            for plugin in resources.plugins:
+                if not Path(plugin).is_file():
+                    raise ValueError("OpenCode plugins must be JavaScript/TypeScript files")
+            config["plugin"] = [*config.get("plugin", []),
+                                *(Path(path).as_uri() for path in resources.plugins)]
+        if resources.skills:
+            skills = config.setdefault("skills", {})
+            skills["paths"] = [*skills.get("paths", []), *resources.skills]
+        return ResourceLaunch(env={"OPENCODE_CONFIG_CONTENT": json.dumps(config)})
+
+    validate_interactive = staticmethod(reject_interactive_tools)
+
     def prepare_interactive(
         self, directory: Path, *, prompt: str | None, model: str | None,
         effort: str | None, session_id: str | None, allowed_tools: list[str] | None = None,
+        resource_launch: ResourceLaunch | None = None,
     ):
-        if allowed_tools is not None:
-            raise NotImplementedError(
-                "Interactive allowed_tools is not implemented for this harness"
-            )
+        self.validate_interactive(allowed_tools=allowed_tools)
 
         from agent_shell.interactive import InteractiveLaunch
 
@@ -67,13 +88,16 @@ class OpenCodeAdapter():
             'JSON.stringify(event) + "\\n");\n'
             '}});\n'
         )
-        config = json.loads(os.environ.get("OPENCODE_CONFIG_CONTENT") or "{}")
+        base_env = {**os.environ, **(resource_launch.env if resource_launch else {})}
+        config = json.loads(base_env.get("OPENCODE_CONFIG_CONTENT") or "{}")
         config["plugin"] = [*config.get("plugin", []), plugin.as_uri()]
         command = ["opencode"]
         if model:
             command += ["--model", model]
         if session_id:
             command += ["--session", session_id]
+        if resource_launch is not None:
+            command += resource_launch.arguments
         if prompt is not None:
             command += ["--prompt", prompt]
         roles: dict[str, str] = {}
@@ -125,30 +149,7 @@ class OpenCodeAdapter():
             isolation_policy if isolation_policy is not None else NoIsolation()
         )
 
-    async def execute(
-            self,
-            cwd: str,
-            prompt: str,
-            allowed_tools: list[str] | None = None,
-            model: str | None = None,
-            effort: str | None = None,
-            include_thinking: bool = False,
-            auto_approve: bool = True,
-            session_id: str | None = None,
-            disallowed_tools: list[str] | None = None,
-    ) -> AgentResponse:
-        return await collect_response(
-            self,
-            cwd,
-            prompt,
-            allowed_tools=allowed_tools,
-            model=model,
-            effort=effort,
-            include_thinking=include_thinking,
-            auto_approve=auto_approve,
-            session_id=session_id,
-            disallowed_tools=disallowed_tools,
-        )
+    execute = collect_response
 
     async def stream(
             self,
@@ -161,6 +162,7 @@ class OpenCodeAdapter():
             auto_approve: bool = True,
             session_id: str | None = None,
             disallowed_tools: list[str] | None = None,
+            resource_launch: ResourceLaunch | None = None,
     ) -> AsyncIterator[StreamEvent]:
         cmd = ["opencode", "run", "--format", "json"]
 
@@ -191,6 +193,10 @@ class OpenCodeAdapter():
         #  - OPENCODE_PERMISSION: the disallowed_tools denies, scoped to this
         #    subprocess so we never touch the user's global config.
         env = self._build_subprocess_env(cwd, disallowed_tools)
+
+        if resource_launch is not None:
+            cmd[-1:-1] = resource_launch.arguments
+            env.update(resource_launch.env)
 
         logger.debug("Command: %s", cmd)
         logger.info("Process started (cwd=%s)", os.path.abspath(cwd))

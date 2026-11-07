@@ -9,6 +9,9 @@ from uuid import UUID, uuid4
 from pathlib import Path
 from typing import AsyncIterator
 
+from agent_shell.models.resources import SessionResources
+from agent_shell.ports.resources import ResourceLaunch
+from agent_shell.resources import require_resource_support
 from agent_shell.adapters.health import run_health_probe
 from agent_shell.adapters.model_discovery import decode_model_output, run_model_command
 from agent_shell.adapters.process_failure import process_failure_event
@@ -22,7 +25,6 @@ from agent_shell.execution import (
     NoIsolation,
 )
 from agent_shell.models.agent import (
-    AgentResponse,
     HealthCheckResult,
     MCPServerSpec,
     PackageSpec,
@@ -74,10 +76,24 @@ _DISALLOWED_TOOL_MAP = {
 
 
 class GrokAdapter:
+    async def prepare_resources(
+        self, resources: SessionResources, cwd: str, directory: Path,
+        *, auto_approve: bool | None = None,
+    ) -> ResourceLaunch:
+        require_resource_support(resources, frozenset(), "Grok")
+        return ResourceLaunch()
+
+    def validate_interactive(self, *, allowed_tools: list[str] | None) -> None:
+        if allowed_tools is not None:
+            if not allowed_tools or any(not name or "," in name for name in allowed_tools):
+                raise ValueError("allowed_tools must contain nonempty native tool names")
+
     def prepare_interactive(
         self, directory: Path, *, prompt: str | None, model: str | None,
         effort: str | None, session_id: str | None, allowed_tools: list[str] | None = None,
+        resource_launch: ResourceLaunch | None = None,
     ):
+        self.validate_interactive(allowed_tools=allowed_tools)
         from agent_shell.interactive import InteractiveLaunch
 
         # Pin a UUID so discovery cannot pick up another concurrent conversation.
@@ -94,13 +110,13 @@ class GrokAdapter:
         offset = previous.stat().st_size if previous else 0
         command = ["grok", "--resume" if session_id else "--session-id", selected_id]
         if allowed_tools is not None:
-            if not allowed_tools or any(not name or "," in name for name in allowed_tools):
-                raise ValueError("allowed_tools must contain nonempty native tool names")
             command += ["--tools", ",".join(allowed_tools)]
         if model:
             command += ["--model", model]
         if effort:
             command += ["--reasoning-effort", effort]
+        if resource_launch is not None:
+            command += resource_launch.arguments
         if prompt is not None:
             command += ["--", prompt]
 
@@ -135,6 +151,7 @@ class GrokAdapter:
             command, parse, frozenset({"session_id", "text", "tool_use", "turn_complete",
                                        "output_tokens", "duration"}),
             event_path=event_path, event_offset=offset,
+            env=resource_launch.env if resource_launch else None,
         )
 
     def __init__(
@@ -150,30 +167,7 @@ class GrokAdapter:
             isolation_policy if isolation_policy is not None else NoIsolation()
         )
 
-    async def execute(
-            self,
-            cwd: str,
-            prompt: str,
-            allowed_tools: list[str] | None = None,
-            model: str | None = None,
-            effort: str | None = None,
-            include_thinking: bool = False,
-            auto_approve: bool = True,
-            session_id: str | None = None,
-            disallowed_tools: list[str] | None = None,
-    ) -> AgentResponse:
-        return await collect_response(
-            self,
-            cwd,
-            prompt,
-            allowed_tools=allowed_tools,
-            model=model,
-            effort=effort,
-            include_thinking=include_thinking,
-            auto_approve=auto_approve,
-            session_id=session_id,
-            disallowed_tools=disallowed_tools,
-        )
+    execute = collect_response
 
     async def stream(
             self,
@@ -186,6 +180,7 @@ class GrokAdapter:
             auto_approve: bool = True,
             session_id: str | None = None,
             disallowed_tools: list[str] | None = None,
+            resource_launch: ResourceLaunch | None = None,
     ) -> AsyncIterator[StreamEvent]:
         native, unsupported = resolve_disallowed_tools(
             disallowed_tools, _DISALLOWED_TOOL_MAP,
@@ -207,6 +202,9 @@ class GrokAdapter:
             disallowed_native=native,
         )
 
+        if resource_launch is not None:
+            cmd.extend(resource_launch.arguments)
+
         logger.debug("Command: %s", cmd)
         logger.info("Process started (cwd=%s)", os.path.abspath(cwd))
 
@@ -214,6 +212,8 @@ class GrokAdapter:
             cmd,
             cwd=os.path.abspath(cwd),
             isolation_policy=self._isolation_policy,
+            **({"env": {**os.environ, **resource_launch.env}}
+               if resource_launch is not None and resource_launch.env else {}),
         )
 
         self._active_processes.append(process)

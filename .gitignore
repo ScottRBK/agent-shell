@@ -13,6 +13,12 @@ src/agent_shell/_version.py
 # Local Pi workspace data
 /.pi/
 
+# Local credentials
+/.env
+
+# Local SonarQube configuration and scanner output
+/.sonarqube/
+
 # Nix build results
 result
 result-*
