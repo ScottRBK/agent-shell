@@ -1,0 +1,38 @@
+# Dependabot version updates for the flake inputs and pinned Actions.
+#
+# Python dependencies are deliberately NOT listed here. The package has zero
+# runtime requirements; the only pinned Python surface is the dev group
+# (pytest, pytest-asyncio) and its uv.lock, which Nix builds consume directly.
+# Scheduled bumps would churn that lock - and therefore every cached Nix
+# closure - for no functional gain, so Python stays on manual `uv lock`
+# refreshes plus Dependabot *security* updates, which only touch versions with
+# a known advisory. Say the word if you would rather have a `uv` ecosystem here
+# too and it is a one-line addition.
+#
+# Docs: https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+version: 2
+updates:
+  # nix flake inputs: flake.nix and flake.lock
+  - package-ecosystem: "nix"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Group all input bumps into one PR per week so a routine refresh costs one
+    # review rather than one per input. The pyproject-nix trio is follows-linked,
+    # so bumping them together is also the only way to test a compatible set.
+    groups:
+      flake-inputs:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  # GitHub Actions, including the SHA-pinned actions in the publishing jobs.
+  - package-ecosystem: "github-actions"
+    directory: "/.github/workflows"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
