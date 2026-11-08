@@ -109,3 +109,8 @@ follow_up = await shell.execute(
 
 See [more examples](docs/examples.md) for isolation and execution hosts, failure handling,
 streaming, model discovery, health checks, tool restrictions, MCP servers, packages, and logging.
+
+## Guides
+
+- [Nix](docs/nix.md) — reproducible dev shell, build and checks from `uv.lock`, plus
+  `nix-build` / `nix-shell` entry points for Nix without flakes enabled.
