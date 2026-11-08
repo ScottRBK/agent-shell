@@ -185,7 +185,7 @@ async def test_injected_client_does_not_trigger_unrelated_herdr_cleanup(tmp_path
     marker = tmp_path / "unexpected-herdr-close"
     herdr_bin = tmp_path / "herdr"
     herdr_bin.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         f"open({str(marker)!r}, 'a').write('called\\n')\n"
     )
     herdr_bin.chmod(0o755)
@@ -426,7 +426,7 @@ async def test_herdr_host_bounds_cli_cleanup_after_pane_startup_timeout(tmp_path
     # Arrange
     herdr_bin = tmp_path / "herdr"
     herdr_bin.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import json, sys, time\n"
         "if sys.argv[1:3] == ['workspace', 'create']:\n"
         "    print(json.dumps({'result': {'workspace': {'workspace_id': 'fake:workspace'}, "
@@ -587,7 +587,7 @@ async def test_herdr_worker_closes_its_pane_after_host_interpreter_exit(tmp_path
     workspace_close_marker = tmp_path / "workspace-closed"
     socket_marker = tmp_path / "socket-path"
     herdr_bin.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import json, os, shlex, subprocess, sys\n"
         "if sys.argv[1:3] == ['workspace', 'create']:\n"
         "    print(json.dumps({'result': {'workspace': {'workspace_id': 'fake:workspace'}, "
@@ -668,7 +668,7 @@ async def test_herdr_worker_bounds_hung_cleanup_cli_calls(tmp_path):
     workspace_closed = tmp_path / "workspace-closed"
     worker_pid_file = tmp_path / "worker.pid"
     herdr_bin.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import json, shlex, subprocess, sys, time\n"
         "if sys.argv[1:3] == ['workspace', 'create']:\n"
         "    print(json.dumps({'result': {'workspace': {'workspace_id': 'fake:workspace'}, "
@@ -787,7 +787,7 @@ async def test_agentshell_executes_a_claude_run_through_the_herdr_host(
         claude_fixtures.RESULT_EVENT_SUCCESS,
     ]
     fake_claude.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import json\n"
         f"for event in {events!r}:\n"
         "    print(json.dumps(event), flush=True)\n"
@@ -821,7 +821,7 @@ async def test_agentshell_execute_waits_for_herdr_cleanup_before_returning(
         claude_fixtures.RESULT_EVENT_SUCCESS,
     ]
     fake_claude.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import json\n"
         f"for event in {events!r}:\n"
         "    print(json.dumps(event), flush=True)\n"
@@ -853,7 +853,7 @@ async def test_agentshell_health_check_uses_the_herdr_host(
         claude_fixtures.RESULT_EVENT_SUCCESS,
     ]
     fake_claude.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import json\n"
         f"for event in {events!r}:\n"
         "    print(json.dumps(event), flush=True)\n"
@@ -887,7 +887,7 @@ async def test_agentshell_preserves_herdr_target_nonzero_status(
         claude_fixtures.RESULT_EVENT_SUCCESS,
     ]
     fake_claude.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import json, sys\n"
         f"for event in {events!r}:\n"
         "    print(json.dumps(event), flush=True)\n"
@@ -916,7 +916,7 @@ async def test_agentshell_abandoned_stream_cleans_up_its_herdr_pane(
     bin_dir.mkdir()
     fake_claude = bin_dir / "claude"
     fake_claude.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import json, time\n"
         f"print(json.dumps({claude_fixtures.SYSTEM_EVENT!r}), flush=True)\n"
         "time.sleep(60)\n"
@@ -1001,7 +1001,7 @@ async def test_all_adapters_execute_through_the_same_herdr_host(
     bin_dir.mkdir()
     fake_cli = bin_dir / binary_name
     fake_cli.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import json\n"
         f"for event in {events!r}:\n"
         "    print(json.dumps(event), flush=True)\n"
