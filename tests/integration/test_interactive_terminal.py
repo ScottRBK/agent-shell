@@ -331,7 +331,7 @@ async def test_agentshell_interactive_exactly_targets_numeric_session(
     )
     wrapper.chmod(0o755)
     codex = tmp_path / "codex"
-    codex.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(60)\n")
+    codex.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n")
     codex.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
     shell = AgentShell(
@@ -367,7 +367,7 @@ async def test_process_exit_finishes_event_stream_without_claiming_turn_success(
     from agent_shell.shell import AgentShell
 
     binary = tmp_path / "codex"
-    binary.write_text("#!/usr/bin/env python3\nraise SystemExit(4)\n")
+    binary.write_text(f"#!{sys.executable}\nraise SystemExit(4)\n")
     binary.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
     shell = AgentShell(AgentType.CODEX, execution_host=TmuxExecutionHost())
@@ -692,7 +692,9 @@ async def test_immediate_process_exit_keeps_exact_status(isolated_tmux, tmp_path
     host = TmuxExecutionHost()
 
     # Act
-    async with await host.launch_interactive(["/bin/true"], str(tmp_path)) as terminal:
+    async with await host.launch_interactive(
+        [shutil.which("true")], str(tmp_path)
+    ) as terminal:
         status = await asyncio.wait_for(terminal.wait(), 5)
 
         # Assert
