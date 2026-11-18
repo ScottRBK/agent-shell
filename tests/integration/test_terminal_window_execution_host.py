@@ -375,7 +375,7 @@ async def test_agentshell_stream_uses_terminal_host_without_adapter_changes(
     bin_dir.mkdir()
     fake_cli = bin_dir / "claude"
     fake_cli.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import json\n"
         "print(json.dumps({'type': 'system', 'session_id': 'terminal-session'}), flush=True)\n"
         "print(json.dumps({'type': 'assistant', 'message': {'content': [\n"
@@ -416,7 +416,7 @@ async def test_agentshell_stream_stays_lossless_when_the_visible_terminal_stalls
     bin_dir.mkdir()
     fake_cli = bin_dir / "claude"
     fake_cli.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import json\n"
         "payload = 'x' * 262144\n"
         "print(json.dumps({'type': 'assistant', 'message': {'content': [\n"
@@ -820,7 +820,7 @@ async def test_abandoned_agentshell_stream_cancels_the_terminal_worker(
     bin_dir.mkdir()
     fake_cli = bin_dir / "claude"
     fake_cli.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import fcntl, json, os, time\n"
         "lock_file = open(os.environ['AGENTSHELL_TERMINAL_LOCK'], 'w')\n"
         "fcntl.flock(lock_file, fcntl.LOCK_EX)\n"

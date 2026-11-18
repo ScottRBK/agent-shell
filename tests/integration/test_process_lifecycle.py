@@ -74,7 +74,7 @@ CLI_NAME = {
 # `all(p.disconnected ...)`. Inheriting the pipes therefore gated the child's `wait()` on the
 # grandchild's 60s lifetime, which is why awaiting the child used to be a trap. On DEVNULL it
 # is a 0ms reap barrier instead, and no test has to poll for the reap.
-_FAKE_CLI = '''#!/usr/bin/env python3
+_FAKE_CLI = f"#!{sys.executable}\n" + '''
 import json, os, subprocess, sys, time
 spec = json.loads(os.environ["AGENTSHELL_FAKE_CLI"])
 if spec.get("required_pid") is not None and os.getpid() != spec["required_pid"]:

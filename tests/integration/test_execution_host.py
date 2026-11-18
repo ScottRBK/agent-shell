@@ -505,7 +505,7 @@ async def test_agentshell_survives_a_matching_cleanup_command(tmp_path):
     bin_dir.mkdir(parents=True)
     fake_claude = bin_dir / "claude"
     fake_claude.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import os, subprocess, time\n"
         "subprocess.run(['pkill', '-TERM', '-f', os.environ['AGENTSHELL_TEST_MARKER']], "
         "check=False)\n"

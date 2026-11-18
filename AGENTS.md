@@ -109,6 +109,45 @@ uv run --locked pytest tests/unit tests/integration -v
 uv run pytest -v
 ```
 
+## Nix
+
+The repository ships a flake (flake-parts + uv2nix) that builds the locked `uv.lock`
+environment reproducibly. The `uv` workflow above remains the primary dev loop; Nix adds
+reproducibility and checks, it does not replace `uv`.
+
+```bash
+nix develop                 # locked python 3.12 + pytest + uv + ruff, hooks auto-installed
+nix build .#agent-shell-py  # the library, installed into a python3.12 site-packages
+nix flake check             # pre-commit hooks + zero-runtime-deps + built-import + unit & integration tests (with import contracts)
+nix fmt                     # format gate (default stage only: nixfmt, deadnix, statix)
+```
+
+Rules that are easy to get wrong:
+
+- **Inside `nix develop`, `uv` is for lockfile operations only** (`uv add`, `uv lock`).
+  `UV_NO_SYNC=1` stops uv syncing packages *into* a venv; it does not stop uv creating one. `uv run`
+  also resolves its own interpreter rather than the shell's, so it can build a stray,
+  dependency-free `.venv` around a different Python. Run `pytest` directly in the shell.
+- **`tests/e2e` never runs in a Nix build or check.** It calls real agent CLIs and incurs API
+  cost. Checks scope to `tests/unit` + `tests/integration` and pass `-m "not e2e"`; the sandbox
+  has no network, so a test that needs one fails closed.
+- **`ruff` and `typos` are wired at the `manual` stage**, so a green `nix flake check` does not
+  mean they ran. The repo has no lint config yet; run them deliberately with
+  `pre-commit run ruff --hook-stage manual --all-files` and do not promote them to a default
+  stage without deciding the lint configuration with the maintainer.
+- **No FHS paths in tests, with two recorded exceptions.** There is no `/usr/bin/env` or
+  `/bin/true` inside the Nix sandbox, and `/bin/true` is absent on NixOS outright — use
+  `sys.executable` for generated shebangs and `shutil.which` for binaries. Generated fake binaries
+  written into `tmp_path` as payload and put on `PATH` may use `#!/bin/sh`, which does exist in the
+  sandbox and on NixOS. The two `#!/usr/bin/env node` shebangs in `test_interactive_agents.py` are
+  guarded by a `shutil.which("node")` skip, so they pass by skipping rather than by portability.
+- **Version stamping**: pure builds report `0.0.0+dev` because the flake source carries no `.git`.
+  Releases stamp the tag with `AGENT_SHELL_VERSION=$(git describe --tags --abbrev=0)` — the
+  `--abbrev=0` is required, raw `git describe` output is not a valid PEP 440 version.
+- **Do not add version literals to `flake.nix`.**
+
+See [docs/nix.md](docs/nix.md) for the full guide and the practice-matrix decisions.
+
 ## CI/CD
 
 - **CI**: Runs architecture contracts and unit + integration tests on every push and PR
