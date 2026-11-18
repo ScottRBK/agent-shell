@@ -1,0 +1,36 @@
+name: Nix check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flake-check:
+    runs-on: ubuntu-latest
+    # The publisher allows 60 minutes for a cold Nix closure build; use the same
+    # budget here so a lock refresh does not turn a slow check into a false fail.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # No project Cachix substituter is configured in this workflow, so its
+      # project-specific check outputs, including tests, must be built here.
+      - name: Install Nix
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b1 # v31.11.3
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Run flake checks
+        run: nix flake check
