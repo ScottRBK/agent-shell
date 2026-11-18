@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -160,7 +161,7 @@ async def test_pi_installs_missing_package_once_for_concurrent_sessions(
 
     binary = tmp_path / "pi"
     log = tmp_path / "installs"
-    binary.write_text('''#!/usr/bin/env python3
+    binary.write_text(f"#!{sys.executable}\n" + '''
 import json, os, pathlib, sys, time
 home = pathlib.Path(os.environ["PI_CODING_AGENT_DIR"])
 package = home / "npm/node_modules/tools"

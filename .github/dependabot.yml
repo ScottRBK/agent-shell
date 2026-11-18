@@ -1,0 +1,44 @@
+# Dependabot version updates for the flake inputs and pinned Actions.
+#
+# Python dependencies are deliberately NOT listed for scheduled version
+# updates. The package has zero runtime requirements; Nix consumes the locked
+# dev group from uv.lock, so routine bumps churn that closure without changing
+# the library's runtime. Dependabot security updates require the repository's
+# dependency graph and Dependabot alerts to be enabled, and target known
+# advisories.
+#
+# Two limits of the `nix` ecosystem, so a future reader does not rediscover
+# them: it updates flake.lock only and never a ref pinned in flake.nix, and it
+# does not run on private repositories.
+#
+# For github-actions updates, Dependabot rewrites a trailing version comment
+# when it recognizes the existing version and the new SHA maps to a recognized
+# version tag. Otherwise it may leave the old annotation unchanged.
+#
+# Docs: https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+version: 2
+updates:
+  # nix flake inputs: flake.nix and flake.lock
+  - package-ecosystem: "nix"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Group all input bumps into one PR per week so a routine refresh costs one
+    # review rather than one per input. The pyproject-nix trio is follows-linked,
+    # so bumping them together is also the only way to test a compatible set.
+    groups:
+      flake-inputs:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  # GitHub Actions, including the SHA-pinned actions in the publishing jobs.
+  - package-ecosystem: "github-actions"
+    directory: "/.github/workflows"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
