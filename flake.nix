@@ -46,6 +46,19 @@
     };
   };
 
+  # Advertise the public binary cache so a fresh checkout substitutes instead of
+  # rebuilding the uv2nix environment that `nix-cache.yml` already published.
+  # Both keys are the `extra-` variants, so a user's own substituters and keys
+  # survive. Nix applies flake configuration only when the user permits it
+  # (`accept-flake-config`, or by answering the prompt), so nothing here binds
+  # anyone who declines.
+  nixConfig = {
+    extra-substituters = [ "https://agent-shell.cachix.org" ];
+    extra-trusted-public-keys = [
+      "agent-shell.cachix.org-1:Cy0JVE3tgmr9QNKPm3X20owXZa9AcED7IkY/g+ErDq4="
+    ];
+  };
+
   outputs =
     inputs@{ flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
